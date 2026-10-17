@@ -7,6 +7,8 @@ I will just copy the readme so i don't need to write twice.
 Difference is that Water damage and impact damage is default off. So you can use tarp and pole just for aesthetic.
 
 ## Cargo water damage (CAN BE TOGGLE OFF IN CONFIGURATOR)
+<img width="3840" height="2160" alt="207573~1" src="https://github.com/user-attachments/assets/90010956-ad69-4ded-a76f-fd009b3750a5" />
+
 - Most of the cargo will now receive water damage when they are soaked in water, under rain, or drop into sea.
   - Trade goods that is not affect by water damage: 
     - coconuts, gems, iron, gold, copper, tools, sculptures, logs, nails, marble, silver, sulfur, rubber.
