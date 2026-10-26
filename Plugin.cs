@@ -25,7 +25,7 @@ namespace TentandPlank
     public sealed class Plugin : BaseUnityPlugin
     {
         public const string Guid = "DogEggz.TentandPlank";
-        public const string Version = "1.0.0";
+        public const string Version = "1.1.1";
         internal static ManualLogSource Log;
         internal static Plugin Instance;
         private Harmony harmony;
@@ -52,8 +52,9 @@ namespace TentandPlank
         {
             yield return null; yield return null;
             foreach (var water in UnityEngine.Object.FindObjectsOfType<BoatDamageWater>()) BoatWater.Register(water);
+            WetOutline.Hook();
         }
-        private void OnDestroy() => harmony?.UnpatchSelf();
+        private void OnDestroy() { harmony?.UnpatchSelf(); WetOutline.Unhook(); }
     }
 
     internal static class Fields
@@ -87,14 +88,19 @@ namespace TentandPlank
     {
         internal static ConfigEntry<bool> WaterDamage, WaterDamageHint, CoverHint, TarpWear, CargoDamageHint, FragileCargo;
         internal static ConfigEntry<KeyboardShortcut> BraceKey;
-        // Water damage and fragile cargo are off by default in this mod (the user, 2026-10-15).
+        // Water damage and fragile cargo are off by default in this mod (the user, 2026-10-15); tarp wearing too (the user, 2026-10-24;
+        // on in EconomyOverhaul).
         internal static bool WaterEnabled => WaterDamage?.Value ?? false;
         internal static bool FragileEnabled => FragileCargo?.Value ?? false;
         internal static bool WaterHintEnabled => WaterDamageHint?.Value ?? true;
         internal static bool CoverHintEnabled => CoverHint?.Value ?? false;
         internal static bool CargoDamageHintEnabled => CargoDamageHint?.Value ?? true;
-        internal static bool TarpWearing => TarpWear?.Value ?? true;
-        private static bool tarpWearWas = true;   // the option's value before its last change
+        internal static bool TarpWearing => TarpWear?.Value ?? false;
+        private static bool tarpWearWas = false;   // the option's value before its last change
+        // The blue look outline of cargo getting wetter (the user, 2026-10-24: "Default on (but since water damage is default off, it
+        // will never show if water damage is off)"; WetOutline).
+        internal static ConfigEntry<bool> WetOutlineOption;
+        internal static bool WetOutlineEnabled => WetOutlineOption?.Value ?? true;
         internal static void Bind(ConfigFile config)
         {
             WaterDamage = config.Bind("Cargo", "Enable water damage", false,
@@ -103,13 +109,15 @@ namespace TentandPlank
                 "Show remaining water condition (100% to 0%) below vulnerable cargo hints. Hidden when water damage is disabled. This setting only changes the hint, not damage or cargo value.");
             CoverHint = config.Bind("Cargo", "Show cover percentage", false,
                 "Show how much of vulnerable cargo's top is under cover (a deck, a roof or a canvas tarp), 0% to 100%, below its water damage line. Hidden when water damage is disabled. This setting only changes the hint.");
+            WetOutlineOption = config.Bind("Cargo", "Deep blue outline on wet cargo", true,
+                "When you look at cargo that is getting wetter right now (in water aboard or in the sea, or in rain with its top not fully covered), its outline is deep blue instead of the usual colour. Cargo that is already wet but out of the water and the rain shows the usual outline. Never shown while water damage is disabled.");
             FragileCargo = config.Bind("Cargo", "Enable fragile cargo", false,
                 "Fragile cargo (gems, sculptures, marble) is damaged by hull impacts and loses value. When off, saved damage pauses and cargo has full value. Re-enabling resumes the saved damage.");
             CargoDamageHint = config.Bind("Cargo", "Show cargo damage percentage", true,
                 "Show the damage of fragile cargo (gems, sculptures, marble), 0% intact to 100% ruined, below its other hint lines. Hidden when fragile cargo is disabled. This setting only changes the hint.");
             BraceKey = config.Bind("Wood pole", "Brace key", new KeyboardShortcut(KeyCode.H),
                 "While holding a wood pole, this key braces it (held at your side, pointing forward: with the pick-up key held (the left mouse by default) it pushes boats, docks or the sea bed) or holds it loosely again.");
-            TarpWear = config.Bind("Canvas", "Tarp wearing", true,
+            TarpWear = config.Bind("Canvas", "Tarp wearing", false,
                 "Tied canvas tarps lose 10 health a game day and tear at 0. When off, every tarp's health, colour and holes stay as they are. Turning it back on continues wearing from there.");
             WaterDamage.SettingChanged += (s, e) => { foreach (var c in CargoCondition.Active) c.RefreshSettings(); };
             WaterDamageHint.SettingChanged += (s, e) => { foreach (var c in CargoCondition.Active) c.RefreshHint(); };
@@ -255,6 +263,9 @@ namespace TentandPlank
         public List<int> removedCargo = new List<int>();
         // Optional, as EconomyOverhaul's: data without it (none written by this mod so far) reads as no tarps.
         [System.Runtime.Serialization.OptionalField] public List<TarpState> tarps = new List<TarpState>();
+        // Tarps of 3 spots or 5 and more (2026-10-26, EconomyOverhaul's TARP_SPOTS_DRAFT.md): apart from `tarps`, which an older mod
+        // checks for four spots each (it refuses the whole save on any other); an older mod skips this list.
+        [System.Runtime.Serialization.OptionalField] public List<TarpState> otherTarps = new List<TarpState>();
         public double savedHour;
     }
     internal static class StateCodec
@@ -272,6 +283,7 @@ namespace TentandPlank
             {
                 var result = (SaveState)Serializer().ReadObject(stream);
                 if (result != null && result.tarps == null) result.tarps = new List<TarpState>();
+                if (result != null && result.otherTarps == null) result.otherTarps = new List<TarpState>();   // data before 2026-10-26
                 Validate(result); return result;
             }
         }
@@ -281,7 +293,8 @@ namespace TentandPlank
             bool valid = s != null && s.version == 1 && s.cargo != null && s.removedCargo != null && s.tarps != null && Finite(s.savedHour) && s.savedHour >= 0 &&
                 s.cargo.All(c => c != null && c.id > 0 && c.good >= 1 && c.good <= 64 && c.good != 45 && Finite(c.health) && c.health >= 0 && c.health <= 100 &&
                     Finite(c.impact) && c.impact >= 0 && c.impact <= 100 && (c.stainHistory == null || c.stainHistory.Length == CargoStainHistory.Bytes)) &&
-                s.cargo.Select(c => c.id).Distinct().Count() == s.cargo.Count && s.tarps.All(Tarps.ValidRecord);
+                s.cargo.Select(c => c.id).Distinct().Count() == s.cargo.Count && s.tarps.All(t => Tarps.ValidRecord(t) && Tarps.FourSpots(t)) &&
+                (s.otherTarps == null || s.otherTarps.All(Tarps.ValidRecord));
             if (!valid) throw new InvalidDataException("Tent and Plank save records failed integrity checks");
         }
     }
@@ -304,7 +317,7 @@ namespace TentandPlank
             if (!Ready || SaveBlocked) return;
             foreach (var c in CargoCondition.Active) c.PrepareSave();
             CargoRecords.Prune();
-            State.tarps = Tarps.Records();
+            var tarps = Tarps.Records(); State.tarps = tarps.Where(Tarps.FourSpots).ToList(); State.otherTarps = tarps.Where(t => !Tarps.FourSpots(t)).ToList();
             State.savedHour = CalendarHour;
             StateCodec.Validate(State);
             GameState.modData[Plugin.Guid] = StateCodec.Write(State);
@@ -386,17 +399,18 @@ namespace TentandPlank
 
     // ---- Cargo value at sale (the game's prices x the cargo's condition) ----
     // A shop's price (the game's base units; the shop converts it into local currency): an item the player sells x its
-    // condition; a wood plank bundle on sale 1/10 of what the shop's market asks for one lumber (as EconomyOverhaul's, the
-    // user 2026-10-15), from the market's own price report, rounded up.
+    // condition; a wood plank bundle or a wood pallet on sale a share of what Kicia Bay's market asks for one lumber, from its own
+    // price report, rounded up (WoodPlanks.BundlePrice: EconomyOverhaul's shares since 2026-10-24, the user: the pallet, the vendors and
+    // their prices go into Tent and Plank; until then a bundle 1/10 of the shop's own market's ask).
     [HarmonyPatch(typeof(Shopkeeper), "GetPrice")] internal static class ShopSaleValuePatch
     {
         static void Postfix(Shopkeeper __instance, ShipItem item, ref int __result)
         {
             if (!item) return;
             if (item.sold) { __result = Mathf.RoundToInt(__result * CargoCondition.Factor(item)); return; }
-            if (!WoodPlanks.IsBundle(item)) return;
+            bool pallet = WoodPallets.IsPallet(item); if (!WoodPlanks.IsBundle(item) && !pallet) return;
             var economy = Fields.Get<IslandEconomy>(__instance, "economy"); var m = economy ? economy.GetComponent<IslandMarket>() : null;
-            int lumber = LumberAsk(m); if (lumber > 0) __result = (int)Math.Ceiling(lumber / 10.0);
+            int price = WoodPlanks.BundlePrice(m, pallet); if (price > 0) __result = price;
         }
         // The market's ask for one lumber: its own price report's buy price, or its current price when it has none.
         internal static int LumberAsk(IslandMarket m)
@@ -407,6 +421,10 @@ namespace TentandPlank
                 ? own.buyPrices[WoodPlanks.LumberGood] : m.GetGoodPrice(WoodPlanks.LumberGood);
         }
     }
+    // A bought item leaves its own shop area's list too: the wood vendors' stock and Kicia Bay's pallets and pole bundles sell through
+    // a keeper of another shop area (SharedKeeper), and the game takes a bought item off the keeper's own list only.
+    [HarmonyPatch(typeof(Shopkeeper), "SellItem")] internal static class OwnStockSalePatch
+    { static void Prefix(ShipItem item) { var area = item ? Fields.Get<ShopArea>(item, "shopArea") : null; if (area) area.itemsForSale.Remove(item); } }
     // A trade-book sale: the game pays its price, then sells the first full crate of the good in the market area
     // (IslandMarketWarehouseArea.SellGood); the payment is cut to that crate's condition.
     // shortcut: the receipt and day log show the full price; replace if the trade book shows wrong totals to players.
