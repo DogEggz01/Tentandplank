@@ -25,7 +25,7 @@ namespace TentandPlank
     public sealed class Plugin : BaseUnityPlugin
     {
         public const string Guid = "DogEggz.TentandPlank";
-        public const string Version = "1.1.1";
+        public const string Version = "1.1.2";
         internal static ManualLogSource Log;
         internal static Plugin Instance;
         private Harmony harmony;
@@ -88,6 +88,20 @@ namespace TentandPlank
     {
         internal static ConfigEntry<bool> WaterDamage, WaterDamageHint, CoverHint, TarpWear, CargoDamageHint, FragileCargo;
         internal static ConfigEntry<KeyboardShortcut> BraceKey;
+        // Hull repair with wood planks (the user, 2026-10-27): "Hammering time: a slider ... set time to 0-20s, 1s per step, this is
+        // uncaulked time" (a caulked hull half, as before), "default still 20s"; "Plank needed: 2 buttons, 1 is current (name Fixing fee
+        // equivalent), another is Fixed 0.5% per plank" (the caulking rules the same in both).
+        internal enum PlankCount { FeeEquivalent, FixedHalfPercent }
+        internal static ConfigEntry<int> HammerTime;
+        internal static ConfigEntry<PlankCount> PlanksNeeded;
+        internal static float HammerSeconds => HammerTime?.Value ?? 20;
+        internal static bool FixedPlanks => PlanksNeeded != null && PlanksNeeded.Value == PlankCount.FixedHalfPercent;
+        private static readonly string[] PlankCountNames = { "Fixing fee equivalent", "Fixed 0.5% per plank" };
+        private static void PlankCountButtons(ConfigEntryBase entry)
+        {
+            int was = (int)PlanksNeeded.Value, now = GUILayout.Toolbar(was, PlankCountNames, GUILayout.ExpandWidth(true));
+            if (now != was) PlanksNeeded.Value = (PlankCount)now;
+        }
         // Water damage and fragile cargo are off by default in this mod (the user, 2026-10-15); tarp wearing too (the user, 2026-10-24;
         // on in EconomyOverhaul).
         internal static bool WaterEnabled => WaterDamage?.Value ?? false;
@@ -117,6 +131,12 @@ namespace TentandPlank
                 "Show the damage of fragile cargo (gems, sculptures, marble), 0% intact to 100% ruined, below its other hint lines. Hidden when fragile cargo is disabled. This setting only changes the hint.");
             BraceKey = config.Bind("Wood pole", "Brace key", new KeyboardShortcut(KeyCode.H),
                 "While holding a wood pole, this key braces it (held at your side, pointing forward: with the pick-up key held (the left mouse by default) it pushes boats, docks or the sea bed) or holds it loosely again.");
+            HammerTime = config.Bind("Wood plank", "Hammering time", 20, new ConfigDescription(
+                "Seconds of hammering for one wood plank to repair a damaged hull (0: at once). Half this when the hull is caulked with oakum.",
+                new AcceptableValueRange<int>(0, 20)));
+            PlanksNeeded = config.Bind("Wood plank", "Planks needed", PlankCount.FeeEquivalent, new ConfigDescription(
+                "Fixing fee equivalent: the planks a ship needs for 1% of its hull cost about what the shipyard charges to repair it (more planks for a bigger, dearer ship). Fixed 0.5% per plank: every plank repairs 0.5% of any ship's hull (2 planks for 1%).",
+                null, new ConfigurationManagerAttributes { CustomDrawer = PlankCountButtons }));
             TarpWear = config.Bind("Canvas", "Tarp wearing", false,
                 "Tied canvas tarps lose 10 health a game day and tear at 0. When off, every tarp's health, colour and holes stay as they are. Turning it back on continues wearing from there.");
             WaterDamage.SettingChanged += (s, e) => { foreach (var c in CargoCondition.Active) c.RefreshSettings(); };
@@ -128,6 +148,8 @@ namespace TentandPlank
             tarpWearWas = TarpWear.Value;
         }
     }
+    // Read by the configurator (Configuration Manager) by name: draws a setting with the mod's own controls.
+    internal sealed class ConfigurationManagerAttributes { public Action<ConfigEntryBase> CustomDrawer; public bool? HideDefaultButton; }
 
     // ---- Notices ----
     // The game shows a notification as one text over a parchment of fixed size and never wraps it: each line is wrapped at
