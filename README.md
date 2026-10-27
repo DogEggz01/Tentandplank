@@ -4,7 +4,7 @@
 This is a feature mod separate from Economic Overhaul, for people who don't want the economic change.
 I will just copy the readme so i don't need to write twice.
 
-Difference is that Water damage and impact damage is default off. So you can use tarp and pole just for aesthetic.
+Difference is that Water damage, impact damage and tarp wearing is default off. So you can use tarp and pole just for aesthetic.
 
 ## Cargo water damage (CAN BE TOGGLE OFF IN CONFIGURATOR)
 <img width="3840" height="2160" alt="207573~1" src="https://github.com/user-attachments/assets/90010956-ad69-4ded-a76f-fd009b3750a5" />
