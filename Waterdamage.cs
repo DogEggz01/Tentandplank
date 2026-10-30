@@ -85,6 +85,14 @@ namespace TentandPlank
         // mark blue outline if it's not fully covered"): water at ImmersionStart or more, or rain on a top not fully covered once its
         // cover is known. Wet cargo out of the water and the rain is not.
         public static bool WettingNow(bool damagingWater, double rain, bool coverKnown, double exposed) => damagingWater || coverKnown && rain > 0 && exposed > 0;
+        // Opened cargo (the user, 2026-10-30, both mods; EconomyOverhaul's EVENT_REACH_WATER_DRAFT.md §3: "If player unseal or drink
+        // from the cargo. the cargo will get their water damage turned off and resume their original looks"): a barrel holding fewer
+        // units, or a crate fewer items, than its prefab. Read from the units, so a sip, a pour, a spill or another mod's drink all count.
+        public static bool Opened(float units, float full) => full > 0 && units < full;
+        // Out of the trade ("P1 yes"): opened at 100% water damage (condition 0, where a liquid's price drops to x0.1), so a top-up
+        // can't sell it at full price: the market takes it as not full, a shopkeeper pays an empty barrel's 25.
+        public static bool OutOfTrade(bool opened, float health) => opened && health <= 0;
+        public const int OpenedBarrelPrice = 25;
         // The outline of a looked-at crate getting wetter (EconomyOverhaul's blue A), in place of the game's look colour.
         public static readonly Color WetOutlineColor = new Color(.05f, .15f, .75f);
         // The cargo hint's own lines, added to the item's description below the game's look text. LookUI draws the look text
@@ -137,6 +145,8 @@ namespace TentandPlank
         // this crate is fragile though its good is not (tools spawned by a fragile mission).
         [System.Runtime.Serialization.OptionalField] public float impact;
         [System.Runtime.Serialization.OptionalField] public bool fragile;
+        // Opened (Rules.Opened): water damage off, its condition kept as it was then. False in a save from before (set again at load).
+        [System.Runtime.Serialization.OptionalField] public bool opened;
     }
     public sealed class CargoCondition : MonoBehaviour
     {
@@ -200,8 +210,31 @@ namespace TentandPlank
             internal Mesh mesh;
             internal Material[] originals, owned;
         }
-        private void Awake() { item = GetComponent<ShipItem>(); save = GetComponent<SaveablePrefab>(); }
+        private void Awake() { item = GetComponent<ShipItem>(); save = GetComponent<SaveablePrefab>(); bottle = item as ShipItemBottle; crate = item as ShipItemCrate; }
         internal ShipItem Item => item;
+        private ShipItemBottle bottle;
+        private ShipItemCrate crate;
+        private float fullUnits = -1;      // its prefab's units (a barrel) or items (a crate); 0 for other cargo
+        // No water damage for this cargo: a good water can't touch, or opened (Rules.Opened).
+        private bool WaterOff => state != null && (Immune.Contains(state.good) || state.opened);
+        private float FullUnits()
+        {
+            var directory = PrefabsDirectory.instance ? PrefabsDirectory.instance.directory : null;
+            var prefab = save && directory != null && save.prefabIndex >= 0 && save.prefabIndex < directory.Length ? directory[save.prefabIndex] : null;
+            if (!prefab) return 0;
+            if (bottle) { var p = prefab.GetComponent<ShipItemBottle>(); return p ? p.health : 0; }
+            if (crate) { var p = prefab.GetComponent<ShipItemCrate>(); return p ? p.amount : 0; }
+            return 0;
+        }
+        // Marks the cargo opened once it holds less than its prefab (at load too, so an older save's drunk barrel or unsealed crate
+        // counts); from then its look and hint go back to the game's own.
+        private void CheckOpened()
+        {
+            if (state == null || state.opened || !bottle && !crate) return;
+            if (fullUnits < 0) fullUnits = FullUnits();
+            if (!Rules.Opened(bottle ? bottle.health : crate.amount, fullUnits)) return;
+            state.opened = true; Wetting = false; visualHealth = -1; RefreshAppearance(); RefreshHint();
+        }
         internal Bounds WorldBounds => Bounds();
         internal float CoveredFraction => coveredFraction;
         internal bool CoverRecheckPending => coverRecheckAt != 0;
@@ -240,7 +273,7 @@ namespace TentandPlank
             if (history != null && !history.BelongsTo(restored)) { history.Dispose(); history = null; }
             state = restored;
             state.health = Mathf.Clamp(state.health, 0, 100); visualHealth = -1; ClearExposure();
-            CaptureParent(); RefreshAppearance();
+            CaptureParent(); CheckOpened(); RefreshAppearance();
         }
         internal void CaptureParent()
         {
@@ -283,8 +316,15 @@ namespace TentandPlank
             if (!item) return 1;
             var save = item.GetComponent<SaveablePrefab>();
             if (!save || !World.Cargo.TryGetValue(save.instanceId, out var c)) return 1;
-            float water = Settings.WaterEnabled ? (float)Rules.ConditionFactor(c.health, LiquidCargo.Contains(c.good), Immune.Contains(c.good)) : 1;
+            float water = Settings.WaterEnabled ? (float)Rules.ConditionFactor(c.health, LiquidCargo.Contains(c.good), Immune.Contains(c.good) || c.opened) : 1;
             return water * (Fragile(item, c) ? Rules.IntactFactor(c.impact) : 1);
+        }
+        // Opened at 100% water damage (Rules.OutOfTrade): not sold as cargo even when topped up full. Only with water damage on.
+        internal static bool OutOfTrade(ShipItem item)
+        {
+            if (!Settings.WaterEnabled || !item) return false;
+            var save = item.GetComponent<SaveablePrefab>();
+            return save && World.Cargo.TryGetValue(save.instanceId, out var c) && Rules.OutOfTrade(c.opened, c.health);
         }
         // Fragile: gems, sculptures, marble, or a crate of a fragile mission (remembered on the crate, so it stays fragile).
         // With the option "Enable fragile cargo" off nothing is: no hull damage, no damage line or cracks, full value.
@@ -364,7 +404,7 @@ namespace TentandPlank
         // Runs once the cargo has settled (UpdateExposure) and is cached until it moves.
         internal void Placement()
         {
-            if (!Settings.WaterEnabled || state == null || Immune.Contains(state.good) || !Placed) return;
+            if (!Settings.WaterEnabled || state == null || WaterOff || !Placed) return;
             ScanCover(full: false);
         }
         // Something was set on, lifted off or removed from above this cargo. Runs a frame later
@@ -504,6 +544,7 @@ namespace TentandPlank
             if (!World.Ready || World.Loading || GameState.currentlyLoading) { ResetConditionClock(); return; }
             if (state == null || !World.Cargo.TryGetValue(save.instanceId, out var current) || current != state) Restore();
             if (state == null) { ResetConditionClock(); return; }
+            CheckOpened();
             stainTimer += Time.unscaledDeltaTime;
             if (stainTimer >= CargoStainHistory.UpdateSeconds)
             {
@@ -512,7 +553,7 @@ namespace TentandPlank
             }
             RefreshHint();
             appearanceTimer += Time.unscaledDeltaTime;
-            float targetHealth = Settings.WaterEnabled ? state.health : 100;
+            float targetHealth = Settings.WaterEnabled && !WaterOff ? state.health : 100;
             if (appearanceTimer >= .35f || visualHealth >= 0 && Math.Abs(visualHealth - targetHealth) >= .1f || visualWaterEnabled != Settings.WaterEnabled)
                 RefreshAppearance();
             if (!Settings.WaterEnabled || !Placed) Wetting = false;   // held, stored, or water damage off: not getting wetter
@@ -523,9 +564,9 @@ namespace TentandPlank
             // clock is paused (the trade book pauses it while placing an order on existing cargo).
             if (coverRecheckAt != 0 && Time.frameCount >= coverRecheckAt && state.exposure != 0) { coverRecheckAt = 0; ScanCover(full: true); }
             if (!Sun.sun || Sun.SunPaused()) { ResetConditionClock(); return; }
-            // Immune cargo tracks where it rests too, so cargo under it is rescanned when it is pushed off.
+            // Immune or opened cargo tracks where it rests too, so cargo under it is rescanned when it is pushed off.
             UpdateExposure();
-            if (Immune.Contains(state.good)) { Wetting = false; ResetConditionClock(); return; }
+            if (WaterOff) { Wetting = false; ResetConditionClock(); return; }
             // Crest's asynchronous height queries must be submitted every frame to
             // receive the previous frame's result; quarter-second polling never settles.
             bool loose = !item.currentActualBoat;
@@ -585,10 +626,10 @@ namespace TentandPlank
         {
             if (!item || state == null) return;
             // Water damage, 0% undamaged to 100%; ruined (health below 19.5) shows 81% or more.
-            int percent = Settings.WaterEnabled && Settings.WaterHintEnabled && !Immune.Contains(state.good)
+            int percent = Settings.WaterEnabled && Settings.WaterHintEnabled && !WaterOff
                 ? Rules.WaterHintPercent(state.health) : -1;
             // Cover, 0% open sky to 100% fully covered, once its cover is scanned (option "Show cover percentage", off by default).
-            int cover = Settings.WaterEnabled && Settings.CoverHintEnabled && !Immune.Contains(state.good) && state.exposure != 0
+            int cover = Settings.WaterEnabled && Settings.CoverHintEnabled && !WaterOff && state.exposure != 0
                 ? Mathf.RoundToInt(100 * Mathf.Clamp01(coveredFraction)) : -1;
             // Fragile cargo's damage line (-1 for none) counts too: a hull hit changes only it (fragile goods are water-proof).
             int damage = Settings.CargoDamageHintEnabled && Fragile(item, state) ? Rules.DamagePercent(state.impact) : -1;
@@ -606,7 +647,7 @@ namespace TentandPlank
             if (state == null) return;
             appearanceTimer = 0;
             // Water: goods water can damage. Cracks: fragile cargo with impact damage, on the crates that have crack marks.
-            float health = Settings.WaterEnabled && !Immune.Contains(state.good) ? state.health : 100;
+            float health = Settings.WaterEnabled && !WaterOff ? state.health : 100;
             var sources = SourceRenderers();
             int grain = state.impact > 0 && Fragile(item, state) ? CargoStainMaterial.CrackGrain(sources) : -1;
             var cracks = grain >= 0 ? CargoStainMaterial.CrackTexture() : null;
@@ -1007,6 +1048,12 @@ namespace TentandPlank
     }
     [HarmonyPatch(typeof(ShipItem), "OnPickup")] internal static class CargoPickupPatch { static void Postfix(ShipItem __instance) => __instance.GetComponent<CargoCondition>()?.ClearExposure(); }
     [HarmonyPatch(typeof(ShipItem), "OnEnterInventory")] internal static class CargoInventoryPatch { static void Postfix(ShipItem __instance) => __instance.GetComponent<CargoCondition>()?.ClearExposure(); }
+    // Opened at 100% water damage (Rules.OutOfTrade): the market's area counts it as a barrel not full (its own "Failed to sell -
+    // crate/barrel not full"), and a shopkeeper pays an empty barrel's 25 even when it is full again.
+    [HarmonyPatch(typeof(IslandMarketWarehouseArea), "IsGoodValid")] internal static class OpenedCargoMarketPatch
+    { static void Postfix(Good good, ref bool __result) { if (__result && good && CargoCondition.OutOfTrade(good.GetComponent<ShipItem>())) __result = false; } }
+    [HarmonyPatch(typeof(Shopkeeper), "GetPrice")] internal static class OpenedCargoShopPatch
+    { static void Postfix(ShipItem item, ref int __result) { if (item && item.sold && item is ShipItemBottle && CargoCondition.OutOfTrade(item)) __result = Rules.OpenedBarrelPrice; } }
 
     // ---- Wet stains ----
     // A water triangle extruded downwards, expressed in cargo-local coordinates.
