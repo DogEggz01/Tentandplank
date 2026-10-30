@@ -80,6 +80,13 @@ namespace TentandPlank
             if (waterContact || rain > 0 || noDry || !coverKnown || Ruined(health) || health >= ceiling) return health;
             return (float)Math.Min(ceiling, health + gameHours * DryingPerHour(exposed, clouds, hour));
         }
+        // Whether cargo is getting wetter now, the conditions AdvanceCondition takes condition off under (EconomyOverhaul's wet outline,
+        // its SMALL_REQUESTS_DRAFT.md: "if it's out of the condition that will get wet, it don't show blue outline anymore", "rain should
+        // mark blue outline if it's not fully covered"): water at ImmersionStart or more, or rain on a top not fully covered once its
+        // cover is known. Wet cargo out of the water and the rain is not.
+        public static bool WettingNow(bool damagingWater, double rain, bool coverKnown, double exposed) => damagingWater || coverKnown && rain > 0 && exposed > 0;
+        // The outline of a looked-at crate getting wetter (EconomyOverhaul's blue A), in place of the game's look colour.
+        public static readonly Color WetOutlineColor = new Color(.05f, .15f, .75f);
         // The cargo hint's own lines, added to the item's description below the game's look text. LookUI draws the look text
         // (extraText: name, crate quantity, a mission's destination and due day) down from its anchor, and the description
         // (hintText) centred on an anchor 1.3 look lines lower, in lines 0.6 as tall (QA -HintProbe, 0.39.1). So a blank line
@@ -183,6 +190,8 @@ namespace TentandPlank
         private string suffix;
         private string hintDescription;
         private string hintLookText;
+        // Getting wetter at the last condition update (Rules.WettingNow); the blue look outline (WetOutline) follows it.
+        internal bool Wetting { get; private set; }
         private int hintPercent = -2, hintCover = -2, hintDamage = -2;
         private bool hintLoan;
         private sealed class AppearanceBinding
@@ -361,9 +370,12 @@ namespace TentandPlank
         // Something was set on, lifted off or removed from above this cargo. Runs a frame later
         // so a destroyed item is gone and a lifted one is already in a hand.
         internal void RequestCoverRecheck() { if (state != null && state.exposure != 0) coverRecheckAt = Time.frameCount + 1; }
-        // Downward rays over a 5x5 grid on the cargo's outline seen from above; each blocked ray covers 1/25 of it. Corners
-        // and centre first: if they agree (open deck or a full roof) the rest take the same value, unless something was
-        // just set on top, when all 25 are cast so a small item still counts. A scan aboard (other than the one the boat's
+        // Downward rays over a 5x5 grid on the cargo's outline seen from above; each blocked ray covers its share of the cells on
+        // the cargo. Each ray ends 1 cm over the cargo's own top on its line (A1, HULL_SIDE_WET_DRAFT.md): ended over the highest
+        // corner of the cargo's turned box, a barrel rolled under a low deck read the rays ending above the deck, open (swt-1: 0%
+        // rolled 45 degrees, 100% at 0). A cell whose line misses the cargo (a round barrel's box corners) is left out. Corners
+        // and centre first: if those on the cargo agree (open deck or a full roof) the rest take the same value, unless something
+        // was just set on top, when all are cast so a small item still counts. A scan aboard (other than the one the boat's
         // own move asks for) is checked once more after the boat has gone 100 m: a pier or a cliff it found may be behind.
         private void ScanCover(bool full, bool afterMove = false)
         {
@@ -378,24 +390,59 @@ namespace TentandPlank
                 (1 << 14) | (1 << 16) | (1 << 21) | (1 << 22) | (1 << 23) | (1 << 24) | (1 << 26) | (1 << 27);
             Physics.SyncTransforms();
             Vector3 walkUp = boat && walk ? walk.TransformDirection(boat.InverseTransformDirection(up)).normalized : up;
+            var ends = OwnTops(frame, up, boat, walk, walkUp);
             // Visible item colliders are triggers; their solid physics copies sit on Ignore Raycast
             // (loose items) or on the boat's walk colliders. The second ray counts only those copies,
             // so cargo stacked on a dock or in a warehouse covers what is below it.
             bool Blocked(int n)
             {
-                Vector3 p = frame.Point(n % CoverGrid, n / CoverGrid, CoverGrid);
+                Vector3 p = ends[n].Value;
                 return Covered(p, up, ~excluded, null) || Covered(p, up, 1 << 2, null, itemsOnly: true) ||
                     boat && walk && Covered(walk.TransformPoint(boat.InverseTransformPoint(p)), walkUp, ~PlayerOnlyLayers, walk) ||
                     Tarps.CoverAbove(p, CoverRayHeight);   // canvas tarps and the ships' cloth roofs (no colliders)
             }
             var rays = new bool[CoverGrid * CoverGrid];
-            foreach (int n in CoverFirst) rays[n] = Blocked(n);
-            bool uniform = CoverFirst.All(n => rays[n] == rays[CoverFirst[0]]);
+            var first = CoverFirst.Where(n => ends[n].HasValue).ToArray();
+            foreach (int n in first) rays[n] = Blocked(n);
+            bool uniform = first.Length >= 2 && first.All(n => rays[n] == rays[first[0]]);
+            int on = 0, covered = 0;
             for (int n = 0; n < rays.Length; n++)
-                if (Array.IndexOf(CoverFirst, n) < 0) rays[n] = full || !uniform ? Blocked(n) : rays[CoverFirst[0]];
-            coveredFraction = rays.Count(r => r) / (float)rays.Length;
+            {
+                if (!ends[n].HasValue) continue;
+                if (Array.IndexOf(first, n) < 0) rays[n] = full || !uniform ? Blocked(n) : rays[first[0]];
+                on++; if (rays[n]) covered++;
+            }
+            coveredFraction = covered / (float)Mathf.Max(1, on);
+            // The stain map's cells under a cell off the cargo take the centre's value (or, off it too, the whole reading's).
+            bool offValue = ends[12].HasValue ? rays[12] : coveredFraction >= 1;
+            for (int n = 0; n < rays.Length; n++) if (!ends[n].HasValue) rays[n] = offValue;
             coveredCells = frame.MapCells(rays, CoverGrid, local, m);
             state.exposure = coveredFraction >= 1 ? 1 : 2;
+        }
+        // Each cell's ray end: 1 cm over the cargo's own top on the cell's vertical line, from its physics copy's solid shapes
+        // (the game copies the item's box, mesh and capsule colliders onto it: ItemRigidbody.AddCollider), cast in the boat's
+        // walk copy aboard, in the world loose. Null where the line misses the cargo. No shape on the copy (not made yet): every
+        // cell ends over the box's top as before.
+        private Vector3?[] OwnTops(CoverFrame frame, Vector3 up, Transform boat, Transform walk, Vector3 walkUp)
+        {
+            var ends = new Vector3?[CoverGrid * CoverGrid];
+            var copy = item.itemRigidbodyC;
+            var shapes = copy ? copy.GetComponentsInChildren<Collider>().Where(c => c && c.enabled && !c.isTrigger).ToArray() : new Collider[0];
+            bool aboard = boat && walk; bool any = false;
+            for (int n = 0; n < ends.Length; n++)
+            {
+                Vector3 p = frame.Point(n % CoverGrid, n / CoverGrid, CoverGrid);
+                if (shapes.Length == 0) { ends[n] = p; continue; }
+                Vector3 from = aboard ? walk.TransformPoint(boat.InverseTransformPoint(p)) : p, dir = aboard ? walkUp : up;
+                var ray = new Ray(from + dir * CoverRayHeight, -dir); float nearest = float.MaxValue; Vector3 hitPoint = default;
+                foreach (var shape in shapes)
+                    if (shape.Raycast(ray, out var hit, CoverRayHeight * 2) && hit.distance < nearest) { nearest = hit.distance; hitPoint = hit.point; }
+                if (nearest == float.MaxValue) continue;
+                ends[n] = (aboard ? boat.TransformPoint(walk.InverseTransformPoint(hitPoint)) : hitPoint) + up * .01f; any = true;
+            }
+            if (shapes.Length > 0 && !any)   // the copy's shapes not where the cargo is drawn: the box's top as before
+                for (int n = 0; n < ends.Length; n++) ends[n] = frame.Point(n % CoverGrid, n / CoverGrid, CoverGrid);
+            return ends;
         }
         // The cargo's footprint seen along `up`: the two cargo axes nearest horizontal, flattened.
         private struct CoverFrame
@@ -468,6 +515,8 @@ namespace TentandPlank
             float targetHealth = Settings.WaterEnabled ? state.health : 100;
             if (appearanceTimer >= .35f || visualHealth >= 0 && Math.Abs(visualHealth - targetHealth) >= .1f || visualWaterEnabled != Settings.WaterEnabled)
                 RefreshAppearance();
+            if (!Settings.WaterEnabled || !Placed) Wetting = false;   // held, stored, or water damage off: not getting wetter
+            if (Wetting && item.IsLookedAt()) WetOutline.Want();
             if (!Settings.WaterEnabled) { ResetConditionClock(); return; }
             if (!Placed || GameState.loadingBoatLocalItems || GameState.loadingScenes != 0) { ResetConditionClock(); return; }
             // A rescan after something was set on, lifted off or removed from above also runs while the
@@ -476,7 +525,7 @@ namespace TentandPlank
             if (!Sun.sun || Sun.SunPaused()) { ResetConditionClock(); return; }
             // Immune cargo tracks where it rests too, so cargo under it is rescanned when it is pushed off.
             UpdateExposure();
-            if (Immune.Contains(state.good)) { ResetConditionClock(); return; }
+            if (Immune.Contains(state.good)) { Wetting = false; ResetConditionClock(); return; }
             // Crest's asynchronous height queries must be submitted every frame to
             // receive the previous frame's result; quarter-second polling never settles.
             bool loose = !item.currentActualBoat;
@@ -503,6 +552,7 @@ namespace TentandPlank
             double hour = Sun.sun.localTime;
             bool coverKnown = state.exposure != 0;
             double exposed = coverKnown ? 1 - coveredFraction : 0;
+            Wetting = Rules.WettingNow(damagingWater, rain, coverKnown, exposed);
             double waterDamage = damagingWater ? elapsedHours * Rules.ImmersionPerHour : 0;
             // Stains: open cells get the full rain rate, covered cells none (the history applies the mask).
             double rainDamage = coverKnown && exposed > 0 ? elapsedHours * Rules.RainDamagePerHour(rain, 1) : 0;
@@ -770,6 +820,37 @@ namespace TentandPlank
         internal static float Rain { get { Read(); return rain; } }
         // Within 1 km of the player.
         internal static bool Near(Vector3 p) { Read(); return !hasPlayer || (p - player).sqrMagnitude <= Reach * Reach; }
+    }
+    // The look outline of a crate getting wetter drawn blue (EconomyOverhaul's, its SMALL_REQUESTS_DRAFT.md request 3; here since
+    // 2026-10-24, the user: "the blue outline should be implement to tent and plank mod also. Default on"). The game draws every
+    // looked-at outline in one colour, slot 1 of the main camera's OutlineEffect (its scene colour, a pale tan); only one item is looked
+    // at at a time, so that colour is set to Rules.WetOutlineColor while the looked-at item is a wet crate (CargoCondition.Want each
+    // frame) and given back its scene colour otherwise, just before the camera draws. Other outlines in that slot at that moment (a
+    // new mission's crates, outlined until first picked up) turn blue with it. Never with water damage off (no cargo is wetting then).
+    internal static class WetOutline
+    {
+        private static int wanted = -1;
+        private static cakeslice.OutlineEffect effect;
+        private static Color scene;
+        private static bool blue, hooked;
+        internal static void Want() => wanted = Time.frameCount;
+        internal static void Hook() { if (!hooked) { Camera.onPreCull += PreCull; hooked = true; } }
+        internal static void Unhook() { if (hooked) { Camera.onPreCull -= PreCull; hooked = false; } Restore(); }
+        private static void PreCull(Camera camera)
+        {
+            if (!camera || !camera.CompareTag("MainCamera")) return;
+            var fx = camera.GetComponent<cakeslice.OutlineEffect>(); if (!fx) return;
+            if (fx != effect) { Restore(); effect = fx; }
+            bool on = wanted == Time.frameCount && Settings.WetOutlineEnabled && World.Ready;
+            if (on && !blue) { scene = fx.lineColor1; fx.lineColor1 = Rules.WetOutlineColor; blue = true; }
+            else if (!on && blue) Restore();
+        }
+        // The scene's colour back (the option off, the plugin's end, another camera).
+        internal static void Restore()
+        {
+            if (blue && effect) effect.lineColor1 = scene;
+            blue = false;
+        }
     }
     [HarmonyPatch(typeof(BoatDamageWater), "Start")] internal static class WaterRegisterPatch { static void Postfix(BoatDamageWater __instance) => BoatWater.Register(__instance); }
     [HarmonyPatch(typeof(SaveablePrefab), "RegisterToSave")] internal static class CargoRegisterPatch
