@@ -25,7 +25,7 @@ namespace TentandPlank
     public sealed class Plugin : BaseUnityPlugin
     {
         public const string Guid = "DogEggz.TentandPlank";
-        public const string Version = "1.1.3";
+        public const string Version = "1.1.4";
         internal static ManualLogSource Log;
         internal static Plugin Instance;
         private Harmony harmony;
@@ -59,16 +59,25 @@ namespace TentandPlank
 
     internal static class Fields
     {
-        private static readonly Dictionary<string, FieldInfo> cache = new Dictionary<string, FieldInfo>();
+        // Keyed by the type and the name, not a string joined from them: no string made per call (per-frame callers; EconomyOverhaul's
+        // deep review of 2026-11-02).
+        private static readonly Dictionary<(Type, string), FieldInfo> cache = new Dictionary<(Type, string), FieldInfo>();
         public static FieldInfo Find(Type type, string name)
         {
-            string key = type.FullName + "." + name;
-            if (!cache.TryGetValue(key, out FieldInfo f)) cache[key] = f = AccessTools.Field(type, name) ?? throw new MissingFieldException(key);
+            var key = (type, name);
+            if (!cache.TryGetValue(key, out FieldInfo f)) cache[key] = f = AccessTools.Field(type, name) ?? throw new MissingFieldException(type.FullName + "." + name);
             return f;
         }
         public static T Get<T>(object obj, string name) => (T)Find(obj.GetType(), name).GetValue(obj);
         public static void Set(object obj, string name, object value) => Find(obj.GetType(), name).SetValue(obj, value);
-        public static object Call(object obj, string name, params object[] args) => AccessTools.Method(obj.GetType(), name).Invoke(obj, args);
+        // The method looked up once per type and name, as Find caches fields (the same AccessTools result each call; EconomyOverhaul's).
+        private static readonly Dictionary<(Type, string), MethodInfo> methods = new Dictionary<(Type, string), MethodInfo>();
+        public static object Call(object obj, string name, params object[] args)
+        {
+            var key = (obj.GetType(), name);
+            if (!methods.TryGetValue(key, out MethodInfo m)) methods[key] = m = AccessTools.Method(obj.GetType(), name);
+            return m.Invoke(obj, args);
+        }
     }
     internal static class Embedded
     {
@@ -309,6 +318,15 @@ namespace TentandPlank
                 Validate(result); return result;
             }
         }
+        // The slot a failed save keeps (World.KeepLastGood), dated to that save: the same data with the save's hour. A slot without an
+        // hour (0) is never stale: returned as it is.
+        internal static string Restamp(string slot, double hour)
+        {
+            var state = Read(slot);
+            if (state.savedHour <= 0) return slot;
+            state.savedHour = hour;
+            return Write(state);
+        }
         private static bool Finite(double n) => !double.IsNaN(n) && !double.IsInfinity(n);
         internal static void Validate(SaveState s)
         {
@@ -343,6 +361,15 @@ namespace TentandPlank
             State.savedHour = CalendarHour;
             StateCodec.Validate(State);
             GameState.modData[Plugin.Guid] = StateCodec.Write(State);
+        }
+        // A save that failed keeps the slot's previous data, dated to this save (StateCodec.Restamp): with its own older hour the next
+        // load took it for data the game had saved past without the mod (Rules.StaleSave) and started fresh, losing it (as
+        // EconomyOverhaul's World.KeepLastGood, its deep review of 2026-11-02; the user: "need to fix on tent and plank"). Should that
+        // fail, the slot stays as it was, as before.
+        internal static void KeepLastGood()
+        {
+            try { if (GameState.modData != null && GameState.modData.TryGetValue(Plugin.Guid, out string slot)) GameState.modData[Plugin.Guid] = StateCodec.Restamp(slot, CalendarHour); }
+            catch (Exception e) { Plugin.Log?.LogError("Tent and Plank: the last save's data could not be dated to this save; its next load may start fresh. " + e); }
         }
         internal static void Load()
         {
@@ -383,7 +410,7 @@ namespace TentandPlank
         static void Prefix()
         {
             try { World.Save(); }
-            catch (Exception e) { Plugin.Log.LogError("Tent and Plank data not saved (the save's previous copy is kept). " + e); }
+            catch (Exception e) { Plugin.Log.LogError("Tent and Plank data not saved (the save's previous copy is kept). " + e); World.KeepLastGood(); }
         }
     }
     [HarmonyPatch(typeof(SaveLoadManager), "LoadModData")] internal static class LoadPatch { static void Postfix() => World.Load(); }
@@ -406,6 +433,25 @@ namespace TentandPlank
         {
             foreach (var c in World.State.cargo.Where(c => World.Removed.Contains(c.id)).ToArray()) { World.State.cargo.Remove(c); World.Cargo.Remove(c.id); }
         }
+        // A destroyed item's record retires unless the item comes back. One the game caches far off (save parent -2) respawns from
+        // its ship's cached items; so does one aboard a ship that sank (-3) that the game cached, but cargo it lost in the sinking
+        // (BoatLocalItems.CacheItemsOnSinking) is destroyed at the recovery and never comes back: its record retires (PLG-5 of
+        // EconomyOverhaul's deep review, the user, 2026-11-02: "can we remove it"; until then every -3 record was kept for good).
+        internal static bool Retires(int parent, bool comesBack) => parent != -2 && (parent != -3 || !comesBack);
+        // A copy of this item waits in a ship's cached items, or another live item has its id (the cached copy already respawned).
+        // The game destroys a sunk ship's items at the recovery's black screen, before her cached items respawn.
+        internal static bool ComesBack(SaveablePrefab save)
+        {
+            var manager = SaveLoadManager.instance; if (!manager) return true;   // not known: kept, as before
+            int id = save.instanceId;
+            foreach (var obj in manager.GetCurrentObjects())
+            {
+                var cached = obj && obj.localItems ? obj.localItems.GetCachedItems() : null;
+                if (cached != null) foreach (var data in cached) if (data != null && data.instanceId == id) return true;
+            }
+            foreach (var other in manager.GetCurrentPrefabs()) if (other && other != save && other.instanceId == id) return true;
+            return false;
+        }
     }
     [HarmonyPatch(typeof(ShipItem), "DestroyItem")] internal static class RetireCargoRecordPatch
     {
@@ -413,8 +459,11 @@ namespace TentandPlank
         {
             __state = 0;
             if (!World.Ready || World.Loading || GameState.currentlyLoading || World.SaveBlocked) return;
-            var save = __instance.GetComponent<SaveablePrefab>();
-            if (save && save.GetParentObject() != -2 && save.GetParentObject() != -3) __state = save.instanceId;
+            var save = __instance.GetComponent<SaveablePrefab>(); if (!save) return;
+            int parent = save.GetParentObject();
+            // the search only for a sunk item that has a record
+            bool comesBack = parent == -3 && World.Cargo.ContainsKey(save.instanceId) && CargoRecords.ComesBack(save);
+            if (CargoRecords.Retires(parent, comesBack)) __state = save.instanceId;
         }
         static void Postfix(int __state) { CargoRecords.Destroyed(__state); }
     }
