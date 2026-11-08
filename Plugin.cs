@@ -25,7 +25,7 @@ namespace TentandPlank
     public sealed class Plugin : BaseUnityPlugin
     {
         public const string Guid = "DogEggz.TentandPlank";
-        public const string Version = "1.1.4";
+        public const string Version = "1.1.5";
         internal static ManualLogSource Log;
         internal static Plugin Instance;
         private Harmony harmony;
@@ -97,6 +97,13 @@ namespace TentandPlank
     {
         internal static ConfigEntry<bool> WaterDamage, WaterDamageHint, CoverHint, TarpWear, CargoDamageHint, FragileCargo;
         internal static ConfigEntry<KeyboardShortcut> BraceKey;
+        // The pole's and plank's size keys, shortcuts as the brace key (BOARD_PLANK_DRAFT.md; the user, 2026-11-08: "Add hotkey configuration
+        // for length/radius control of poles, and lenght/width/thickness control of plank in configurator"); read by RodKeys (Item.cs).
+        internal static ConfigEntry<KeyboardShortcut> PoleLongerKey, PoleShorterKey, PoleThickerKey, PoleThinnerKey,
+            PlankLongerKey, PlankShorterKey, PlankWiderKey, PlankNarrowerKey, PlankThickerKey, PlankThinnerKey;
+        // The held pole's or plank's weight on the line under the view (the user, 2026-11-08; default off), read by PoleText (Item.cs).
+        internal static ConfigEntry<bool> ShowRodWeight;
+        internal static bool RodWeightShown => ShowRodWeight?.Value ?? false;
         // Hull repair with wood planks (the user, 2026-10-27): "Hammering time: a slider ... set time to 0-20s, 1s per step, this is
         // uncaulked time" (a caulked hull half, as before), "default still 20s"; "Plank needed: 2 buttons, 1 is current (name Fixing fee
         // equivalent), another is Fixed 0.5% per plank" (the caulking rules the same in both).
@@ -140,6 +147,20 @@ namespace TentandPlank
                 "Show the damage of fragile cargo (gems, sculptures, marble), 0% intact to 100% ruined, below its other hint lines. Hidden when fragile cargo is disabled. This setting only changes the hint.");
             BraceKey = config.Bind("Wood pole", "Brace key", new KeyboardShortcut(KeyCode.H),
                 "While holding a wood pole, this key braces it (held at your side, pointing forward: with the pick-up key held (the left mouse by default) it pushes boats, docks or the sea bed) or holds it loosely again.");
+            KeyboardShortcut Key(KeyCode k) => new KeyboardShortcut(k);
+            PoleLongerKey = config.Bind("Wood pole", "Longer key", Key(KeyCode.Q), "While holding a wood pole, this key makes it 0.1 m longer (held: it keeps lengthening). Held with the mouse wheel, the game's rotate key leans the pole instead.");
+            PoleShorterKey = config.Bind("Wood pole", "Shorter key", Key(KeyCode.E), "While holding a wood pole, this key makes it 0.1 m shorter (held: it keeps shortening).");
+            PoleThickerKey = config.Bind("Wood pole", "Thicker key", Key(KeyCode.O), "While holding a wood pole, this key makes its diameter 0.2x bigger (up to 10x).");
+            PoleThinnerKey = config.Bind("Wood pole", "Thinner key", Key(KeyCode.L), "While holding a wood pole, this key makes its diameter 0.2x smaller (down to 1x).");
+            PlankLongerKey = config.Bind("Wood plank", "Longer key", Key(KeyCode.Q), "While holding a wood plank in placement mode, this key makes it 0.1 m longer (held: it keeps lengthening).");
+            PlankShorterKey = config.Bind("Wood plank", "Shorter key", Key(KeyCode.E), "While holding a wood plank in placement mode, this key makes it 0.1 m shorter (held: it keeps shortening).");
+            PlankWiderKey = config.Bind("Wood plank", "Wider key", Key(KeyCode.O), "While holding a wood plank in placement mode, this key makes it wider, to the next 0.05 m (up to 1 m).");
+            PlankNarrowerKey = config.Bind("Wood plank", "Narrower key", Key(KeyCode.L), "While holding a wood plank in placement mode, this key makes it narrower, to the next 0.05 m (down to 0.05 m).");
+            PlankThickerKey = config.Bind("Wood plank", "Thicker key", Key(KeyCode.I), "While holding a wood plank in placement mode, this key makes it thicker, to the next 0.05 m (up to 1 m).");
+            PlankThinnerKey = config.Bind("Wood plank", "Thinner key", Key(KeyCode.K), "While holding a wood plank in placement mode, this key makes it thinner, to the next 0.05 m (down to today's 45 mm).");
+            // The user, 2026-11-08: "also add a configurator option, default off, when enable, show the weight of the current plank/pole on the text also".
+            ShowRodWeight = config.Bind("Wood pole", "Show pole and plank weight", false,
+                "While holding a wood pole or plank, the line under the view (its size) also shows its weight in lb.");
             HammerTime = config.Bind("Wood plank", "Hammering time", 20, new ConfigDescription(
                 "Seconds of hammering for one wood plank to repair a damaged hull (0: at once). Half this when the hull is caulked with oakum.",
                 new AcceptableValueRange<int>(0, 20)));

@@ -85,6 +85,10 @@ namespace TentandPlank
         // mark blue outline if it's not fully covered"): water at ImmersionStart or more, or rain on a top not fully covered once its
         // cover is known. Wet cargo out of the water and the rain is not.
         public static bool WettingNow(bool damagingWater, double rain, bool coverKnown, double exposed) => damagingWater || coverKnown && rain > 0 && exposed > 0;
+        // No water damage counted for this long after a load or a wake (the user, 2026-11-06, both mods; EconomyOverhaul's
+        // LOAD_WAKE_COVER_DRAFT.md: "let water damage start counting after 5 sec player load into game or wake up from sleep", then "make
+        // the water immune time to 10 sec instead"): seconds at the game's normal speed.
+        public const float WaterHoldSeconds = 10;
         // Opened cargo (the user, 2026-10-30, both mods; EconomyOverhaul's EVENT_REACH_WATER_DRAFT.md §3: "If player unseal or drink
         // from the cargo. the cargo will get their water damage turned off and resume their original looks"): a barrel holding fewer
         // units, or a crate fewer items, than its prefab. Read from the units, so a sip, a pour, a spill or another mod's drink all count.
@@ -122,6 +126,35 @@ namespace TentandPlank
             if (string.IsNullOrEmpty(text)) return 0;
             int lines = 1; foreach (char c in text) if (c == '\n') lines++;
             return lines;
+        }
+    }
+
+    // Whether water damage is held after a load or a wake (Rules.WaterHoldSeconds). Held while the game is loading or just started (its
+    // own flags: until the fade-in after F is over), then the seconds count down; a wake (the game's justWokeUp coming on) starts them again.
+    public sealed class WaterHoldClock
+    {
+        private float left; private bool wasWoken;
+        public bool Holding => left > 0;
+        public void Step(float seconds, bool starting, bool justWoke)
+        {
+            if (starting || justWoke && !wasWoken) left = Rules.WaterHoldSeconds;
+            else if (left > 0) left = Math.Max(0, left - Math.Max(0, seconds));
+            wasWoken = justWoke;
+        }
+    }
+    // Read from the game's flags, so no patch on its sleep or load code. Time.time, not the real clock: its seconds are the physics'
+    // (the hitches of a load's first frames are capped), and the sleep's x16 is over by the time justWokeUp comes on.
+    internal static class WaterHold
+    {
+        private static readonly WaterHoldClock clock = new WaterHoldClock();
+        private static int frame = -1; private static float last;
+        internal static bool Active => clock.Holding;
+        // Every crate's LateUpdate starts here (the first in a frame steps it), so the flags are seen even while crates wait on a load.
+        internal static void Step()
+        {
+            if (frame == Time.frameCount) return;
+            frame = Time.frameCount;
+            clock.Step(Time.time - last, GameState.currentlyLoading || GameState.justStarted, GameState.justWokeUp); last = Time.time;
         }
     }
 
@@ -415,13 +448,16 @@ namespace TentandPlank
         // corner of the cargo's turned box, a barrel rolled under a low deck read the rays ending above the deck, open (swt-1: 0%
         // rolled 45 degrees, 100% at 0). A cell whose line misses the cargo (a round barrel's box corners) is left out. Corners
         // and centre first: if those on the cargo agree (open deck or a full roof) the rest take the same value, unless something
-        // was just set on top, when all are cast so a small item still counts. A scan aboard (other than the one the boat's
+        // was just set on top, when all are cast so a small item still counts. Aboard, "down" is the ship's own (F1,
+        // LOAD_WAKE_COVER_DRAFT.md): the reading is kept, so it must not hold her tilt of the moment. A scan aboard (other than the one the boat's
         // own move asks for) is checked once more after the boat has gone 100 m: a pier or a cliff it found may be behind.
         private void ScanCover(bool full, bool afterMove = false)
         {
             var boat = item.currentActualBoat; var walk = item.currentWalkCol;
-            // Straight up in the world: whatever lies above the cargo counts, whatever the boat's heel or the cargo's tilt.
-            Vector3 up = Vector3.up;
+            // Whatever lies above the cargo counts, whatever its tilt. Aboard along her own up, so her heel of the moment isn't read (the
+            // user, 2026-11-06, "Implement F1 only": a load or a sleep at sea read cargo at a cover's edge at 96% against 80%, kept until a
+            // put-down; cl-5c). Past 45 degrees, or a hull whose frame isn't upright, straight up in the world. On land always the world's.
+            Vector3 up = boat && boat.up.y > .7f ? boat.up : Vector3.up;
             moveRecheck = boat && !afterMove; if (moveRecheck) moveFrom = Real(boat.position);
             Bounds local = LocalMeshBounds();
             Matrix4x4 m = transform.localToWorldMatrix;
@@ -439,7 +475,7 @@ namespace TentandPlank
                 Vector3 p = ends[n].Value;
                 return Covered(p, up, ~excluded, null) || Covered(p, up, 1 << 2, null, itemsOnly: true) ||
                     boat && walk && Covered(walk.TransformPoint(boat.InverseTransformPoint(p)), walkUp, ~PlayerOnlyLayers, walk) ||
-                    Tarps.CoverAbove(p, CoverRayHeight);   // canvas tarps and the ships' cloth roofs (no colliders)
+                    Tarps.CoverAbove(p, up, CoverRayHeight);   // canvas tarps and the ships' cloth roofs (no colliders)
             }
             var rays = new bool[CoverGrid * CoverGrid];
             var first = CoverFirst.Where(n => ends[n].HasValue).ToArray();
@@ -543,6 +579,7 @@ namespace TentandPlank
         }
         private void LateUpdate()
         {
+            WaterHold.Step();
             if (!World.Ready || World.Loading || GameState.currentlyLoading) { ResetConditionClock(); return; }
             if (state == null || !World.Cargo.TryGetValue(save.instanceId, out var current) || current != state) Restore();
             if (state == null) { ResetConditionClock(); return; }
@@ -569,6 +606,9 @@ namespace TentandPlank
             // Immune or opened cargo tracks where it rests too, so cargo under it is rescanned when it is pushed off.
             UpdateExposure();
             if (WaterOff) { Wetting = false; ResetConditionClock(); return; }
+            // After a load or a wake nothing is counted for Rules.WaterHoldSeconds: water, sea, rain or drying (the ship's physics is rough then); its cover is
+            // still scanned above. The clock starts from 0 when the hold ends.
+            if (WaterHold.Active) { Wetting = false; ResetConditionClock(); return; }
             // Crest's asynchronous height queries must be submitted every frame to
             // receive the previous frame's result; quarter-second polling never settles.
             bool loose = !item.currentActualBoat;

@@ -46,24 +46,50 @@ namespace TentandPlank
         // H(same as bracing button) to switch attachment mode, default is current mode"), kept in its saved health with its look: look +
         // 24 x (length code + 37 x (width code + 15 x mode)). Length code 0 today's 0.872 m, 1-36 0.5-4.0 m in 0.1 m steps; width code 0
         // today's 0.152 m (1.0x), 1-12 1.25x-4.0x, 13 and 14 0.5x and 0.75x (steps of 0.25 from 1.0x, -2 to 12); mode 0 flat, 1 by one
-        // end. Every plank saved before (0-23) reads as today's plank, flat. Weight by area (K5 (a)), 9.375 lb at today's size.
-        public const int PlankLooks = 24, PlankLengthCodes = 37, PlankWidthCodes = 15, PlankMinWidthSteps = -2, PlankMaxWidthSteps = 12;
-        public const float PlankLength0 = .872f, PlankWidth0 = .152f, PlankThickness = .045f, PlankMass0 = 9.375f;
-        public const float PlankMinLength = .5f, PlankMaxLength = 4, PlankLengthStep = .1f, PlankWidthStep = .25f;
-        public struct PlankShape { public int look, length, width; public bool end; }   // length: its code; width: steps from 1.0x
+        // end. Every plank saved before (0-23) reads as today's plank, flat. Weight by area (K5 (a)), then by volume; today's plank 5 lb (the user,
+        // 2026-11-08: "change the standard plank weight to 6 lbs, and scale from here", "sorry 6.5 lbs", then "change the weight of plank to 5 lbs";
+        // 9.375 lb before, the game's lumber 1,200 lb / 128).
+        // Width and thickness on one 50 mm grid, for square beams (BOARD_PLANK_DRAFT.md, "Width and thickness on a 50 mm grid"; the user, 2026-11-08:
+        // "the width and thickness's step should be matching so player can create proper square beam", then "50 mm steps"; before it "make the
+        // biggest size of plank 4m x 1m x 1m"): 0.05 m to 1 m, 20 sizes (PlankGridSizes). The width starts at today's 0.152 m and a press goes to
+        // the next size on the grid (0.2 m wider, 0.15 m narrower); the thickness starts at today's 45 mm, then 0.05 m to 1 m. A plank saved with
+        // a released width (0.5x-4.0x in 0.25x steps, the width field) keeps it until O or L is pressed. Kept on top of the released code:
+        // + 26,640 x (thickness + 21 x width on the grid), 0 for none, the decode's limit 11,748,239, a whole number a float holds (under 16,777,216),
+        // so every plank saved before reads its own width and 45 mm. Weight by volume.
+        public const int PlankLooks = 24, PlankLengthCodes = 37, PlankWidthCodes = 15, PlankMinWidthSteps = -2, PlankMaxWidthSteps = 12, PlankGridSizes = 20;
+        public const float PlankLength0 = .872f, PlankWidth0 = .152f, PlankThickness = .045f, PlankMass0 = 5;
+        // The plank bundle the shops sell: 8 planks, weighing what they weigh (the user, 2026-11-08, asked whether the bundle should weigh 40 lb to match:
+        // "yes"; 75 lb before).
+        public const int PlankBundleCount = 8;
+        public const float PlankBundleMass = PlankBundleCount * PlankMass0;
+        public const float PlankMinLength = .5f, PlankMaxLength = 4, PlankLengthStep = .1f, PlankWidthStep = .25f, PlankGridStep = .05f;
+        // Its thickness (BOARD_PLANK_DRAFT.md; the user, 2026-11-08: "Make plank also able to increase thickness, current thickness is the
+        // minimal, allow to increase to 5 times the thickness. use IK for control"; "placement mode"; then the grid above): 0 today's 45 mm, 1-20 on
+        // the grid (PlankMaxThickSteps).
+        public const int PlankMaxThickSteps = PlankGridSizes, PlankGridCodes = PlankGridSizes + 1, PlankCodeSpan = PlankLooks * PlankLengthCodes * PlankWidthCodes * 2;
+        // length: its code; width: the released steps from 1.0x (-2 to 12) while grid is 0; grid: the width on the 50 mm grid (1-20), 0 none; thick: 0 today's
+        // 45 mm, 1-20 on the grid.
+        public struct PlankShape { public int look, length, width, grid, thick; public bool end; }
         // A plank as a vanilla table (PLANK_TABLE_DRAFT.md, the user, 2026-10-26: T1 only nailed, T2 any angle, T3 wall items still
         // attach): the game's own `allowPlacingItems` on while it is bought, nailed and in placement mode (by one end), and the hand
         // holds no wall item (a hook, a pole or a plank aimed at it attaches to it instead).
         public static bool PlankTable(bool sold, bool nailed, bool placement, bool wallItemHeld) => sold && nailed && placement && !wallItemHeld;
-        public static float PlankCode(PlankShape s) =>
-            Clamp(s.look, 0, PlankLooks - 1) + PlankLooks * (Clamp(s.length, 0, PlankLengthCodes - 1) + PlankLengthCodes * ((Clamp(s.width, PlankMinWidthSteps, PlankMaxWidthSteps) + PlankWidthCodes) % PlankWidthCodes + PlankWidthCodes * (s.end ? 1 : 0)));
+        public static float PlankCode(PlankShape s)
+        {
+            int grid = Clamp(s.grid, 0, PlankGridSizes), field = grid > 0 ? 0 : (Clamp(s.width, PlankMinWidthSteps, PlankMaxWidthSteps) + PlankWidthCodes) % PlankWidthCodes;
+            return Clamp(s.look, 0, PlankLooks - 1) + PlankLooks * (Clamp(s.length, 0, PlankLengthCodes - 1) + PlankLengthCodes * (field + PlankWidthCodes * (s.end ? 1 : 0)))
+                + (float)PlankCodeSpan * (Clamp(s.thick, 0, PlankMaxThickSteps) + PlankGridCodes * grid);
+        }
+        // The largest code: every thickness and every width on the grid on top of the released codes (26,640 x 21 x 21 - 1).
+        public const int PlankTopCode = PlankCodeSpan * PlankGridCodes * PlankGridCodes - 1;
         public static PlankShape PlankDecode(double health)
         {
-            if (double.IsNaN(health) || double.IsInfinity(health) || health < 0 || health > PlankCode(new PlankShape { look = PlankLooks - 1, length = PlankLengthCodes - 1, width = -1, end = true })) return default;
+            if (double.IsNaN(health) || double.IsInfinity(health) || health < 0 || health > PlankTopCode) return default;
             int c = (int)Math.Round(health), look = c % PlankLooks; c /= PlankLooks;
             int length = c % PlankLengthCodes; c /= PlankLengthCodes;
             int width = c % PlankWidthCodes; c /= PlankWidthCodes;
-            return new PlankShape { look = look, length = length, width = width <= PlankMaxWidthSteps ? width : width - PlankWidthCodes, end = c == 1 };
+            int top = c / 2, grid = top / PlankGridCodes;
+            return new PlankShape { look = look, length = length, width = grid > 0 ? 0 : width <= PlankMaxWidthSteps ? width : width - PlankWidthCodes, grid = grid, end = c % 2 == 1, thick = top % PlankGridCodes };
         }
         private static int Clamp(int x, int lo, int hi) => x < lo ? lo : x > hi ? hi : x;
         public static float PlankLength(int code) => code <= 0 || code >= PlankLengthCodes ? PlankLength0 : (float)Math.Round(PlankMinLength + (code - 1) * PlankLengthStep, 1);
@@ -74,11 +100,27 @@ namespace TentandPlank
             if (code <= 0 || code >= PlankLengthCodes) { double to = step > 0 ? Math.Ceiling(PlankLength0 * 10 + 1e-6) / 10 : Math.Floor(PlankLength0 * 10 - 1e-6) / 10; return (int)Math.Round((to - PlankMinLength) / PlankLengthStep) + 1; }
             return Clamp(code + step, 1, PlankLengthCodes - 1);
         }
-        public static float PlankWidthScale(int steps) => 1 + PlankWidthStep * Clamp(steps, PlankMinWidthSteps, PlankMaxWidthSteps);
-        public static float PlankWidth(int steps) => PlankWidth0 * PlankWidthScale(steps);
-        public static float PlankMass(PlankShape s) => PlankMass0 * PlankLength(s.length) * PlankWidth(s.width) / (PlankLength0 * PlankWidth0);
+        // A released width: 0.25x of 0.152 m a step from 1.0x (-2 to 12). A size on the grid: 0.05 m x it (1-20).
+        public static float PlankWidth(int steps) => PlankWidth0 * (1 + PlankWidthStep * Clamp(steps, PlankMinWidthSteps, PlankMaxWidthSteps));
+        public static float PlankGrid(int size) => PlankGridStep * Clamp(size, 1, PlankGridSizes);
+        public static float PlankWidth(PlankShape s) => s.grid > 0 ? PlankGrid(s.grid) : PlankWidth(s.width);
+        public static float PlankThick(int thick) => thick <= 0 ? PlankThickness : PlankGrid(thick);
+        public static float PlankThickScale(int thick) => PlankThick(thick) / PlankThickness;
+        // One press wider (+1) or narrower (-1): to the next size on the grid from the width it has (today's 0.152 m to 0.2 or 0.15 m; a released
+        // 0.19 m to 0.2 or 0.15 m); held at 0.05 and 1 m.
+        public static PlankShape PlankWider(PlankShape s, int step)
+        {
+            if (step == 0) return s;
+            double at = PlankWidth(s) / (double)PlankGridStep;
+            int to = step > 0 ? (int)Math.Floor(at + 1e-4) + 1 : (int)Math.Ceiling(at - 1e-4) - 1;
+            s.grid = Clamp(to, 1, PlankGridSizes); s.width = 0; return s;
+        }
+        public static float PlankMass(PlankShape s) => PlankMass0 * PlankLength(s.length) * PlankWidth(s) / (PlankLength0 * PlankWidth0) * PlankThickScale(s.thick);
         // Today's plank exactly: the look meshes are used for it.
-        public static bool PlankPlain(PlankShape s) => s.length == 0 && s.width == 0 && !s.end;
+        public static bool PlankPlain(PlankShape s) => s.length == 0 && s.width == 0 && s.grid == 0 && s.thick == 0 && !s.end;
+        // A held pole's or plank's weight after its size on the line under the view (the configurator's "Show pole and plank weight", 2026-11-08):
+        // ", 10.0 lb" under 100 lb, ", 3353 lb" above.
+        public static string WeightText(float lb) => ", " + (lb < 100 ? lb.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) : Math.Round(lb).ToString("F0", System.Globalization.CultureInfo.InvariantCulture)) + " lb";
         // How far a rod (a pole, or a plank by one end) attached to a surface is lifted out of it so it rests on it, not in it (the
         // user, 2026-10-24: a plank leaned 90 degrees "attached to the middle of the other plank"; asked, "Same, poles too"). It turns
         // about the middle of its end face, so tilted or leaned part of that face would go into the surface. `side` and `up`: how much
@@ -177,13 +219,14 @@ namespace TentandPlank
         // A share of a lumber price, rounded up (as the bundle's 1/10 was); an exact quotient stays exact in the division.
         public static int WoodShare(int lumber, int hundredths) => (int)Math.Ceiling(lumber * (long)hundredths / 100.0);
 
-        // The wooden pallet (the user, 2026-10-24): its top 1.45 x 1.28 m (P8), 0.25 m high, 80 lb (the user, 2026-10-24; the game's
-        // mass is in pounds, as its mission board prints it). A sale takes 2/16 of a lumber from the port's stock (a plank bundle 1/16).
-        public const float PalletWidth = 1.45f, PalletDepth = 1.28f, PalletHeight = .25f, PalletMass = 80, PalletLumber = 2f / 16;
+        // The wooden pallet (the user, 2026-10-24): its top 1.45 x 1.28 m (P8), 0.25 m high, 45 lb (the user, 2026-11-08: "Reduce pallet
+        // weight to 45 lbs"; 80 from 2026-10-24; the game's mass is in pounds, as its mission board prints it), set again at every load
+        // (WoodPallets.ApplyHalf). A sale takes 2/16 of a lumber from the port's stock (a plank bundle 1/16).
+        public const float PalletWidth = 1.45f, PalletDepth = 1.28f, PalletHeight = .25f, PalletMass = 45, PalletLumber = 2f / 16;
         public const int PalletValue = 750;
         // The half pallet (HALF_PALLET_DRAFT.md; the user, 2026-11-02: "Sold price and weight also half, other property should remain
         // same as pallet"; H1 "cut across", H2 "2 half pallet", H4 "5", H5 "keep in pallet's prefab"): the pallet cut across its 1.28 m
-        // into two halves 1.45 x 0.64 m, each 375 and 40 lb; kept in prefab 645 by a mark in its saved health (a whole pallet's is the
+        // into two halves 1.45 x 0.64 m, each 375 and 22.5 lb (half the pallet's 45); kept in prefab 645 by a mark in its saved health (a whole pallet's is the
         // lumber prefab's, never this; the mod reads a pallet's health nowhere else). A half cut again gives 5 planks (230 of its 375, a
         // bundle gives 8 for 375: the user, "this way of generating plank should be less efficient").
         public const float HalfDepth = PalletDepth / 2, HalfMass = PalletMass / 2, HalfMark = -645f;
@@ -193,11 +236,35 @@ namespace TentandPlank
         // The control hints of a held pole or plank (HALF_PALLET_DRAFT.md §4; the user, 2026-11-02, H7: "All 3"): each line its key and
         // what it does, in the order shown. A pole: length, diameter, brace; a plank in placement mode (by one end): length, width,
         // repair mode; in repair mode (flat) only H to placement mode. With things on it (its size fixed) only the H line.
-        public static List<(string key, string what)> RodHintLines(bool pole, bool endMode, bool sizeFixed, string brace)
+        // A plank in placement mode also its thickness (BOARD_PLANK_DRAFT.md, 2026-11-08). The keys' names are the configurator's (the user,
+        // 2026-11-08: "Add hotkey configuration for length/radius control of poles, and lenght/width/thickness control of plank").
+        public static List<(string key, string what)> RodHintLines(bool pole, bool endMode, bool sizeFixed, string brace, string length = "Q/E", string width = "O/L", string thick = "I/K")
         {
             var lines = new List<(string, string)>();
-            if (pole || endMode) { if (!sizeFixed) { lines.Add(("Q/E", "length")); lines.Add(("O/L", pole ? "diameter" : "width")); } lines.Add((brace, pole ? "brace" : "repair mode")); }
+            if (pole || endMode)
+            {
+                if (!sizeFixed) lines.AddRange(RodSizeLines(pole, length, width, thick));
+                lines.Add((brace, pole ? "brace" : "repair mode"));
+            }
             else lines.Add((brace, "placement mode"));
+            return lines;
+        }
+        // Only the size keys: a held rod's first lines, and all of a pointed one's (attached, not nailed: no brace or mode there; the user, 2026-11-08,
+        // "Show them").
+        public static List<(string key, string what)> RodSizeLines(bool pole, string length = "Q/E", string width = "O/L", string thick = "I/K")
+        {
+            var lines = new List<(string, string)> { (length, "length"), (width, pole ? "diameter" : "width") };
+            if (!pole) lines.Add((thick, "thickness"));
+            return lines;
+        }
+        // A pointed rod's controls text: its size lines above the game's own ("pick up\n" with empty hands, "\nlock" with the hammer), so the game's
+        // icons keep their lines (its last line stands at its R icon, the line before at its L icon); a first line the game left empty takes the last
+        // size line. The lines as they stand, and how many of them are the size lines (from the top).
+        public static List<string> PointedControlLines(string game, List<(string key, string what)> sizes, out int sizeLines)
+        {
+            var parts = (game ?? "").Split('\n'); var lines = sizes.Select(s => s.what).ToList(); sizeLines = lines.Count;
+            int from = parts.Length >= 2 && parts[0].Length == 0 ? 1 : 0;
+            for (int i = from; i < parts.Length; i++) lines.Add(parts[i]);
             return lines;
         }
         // Its top boards 40 mm (PALLET_PLANK_DRAFT.md P9, the user: "Make the wood plank at top of pallet be thicker a bit"; was 25 mm;
@@ -367,9 +434,9 @@ namespace TentandPlank
                 foreach (var look in looks) ObjMesh.Shift(look, new Vector3(0, 0, -look.bounds.max.z));
                 var holder = new GameObject("TentandPlank item templates"); holder.SetActive(false); UnityEngine.Object.DontDestroyOnLoad(holder);
                 var wood = dir[LumberIndex].GetComponent<MeshRenderer>().sharedMaterial;
-                var bundle = Template(dir[LumberIndex], holder.transform, "640 wood plank bundle", bundleMesh, wood, BundleIndex, "wood plank bundle", 375, 75, true);
+                var bundle = Template(dir[LumberIndex], holder.transform, "640 wood plank bundle", bundleMesh, wood, BundleIndex, "wood plank bundle", 375, Rules.PlankBundleMass, true);
                 UnityEngine.Object.DestroyImmediate(bundle.GetComponent<Good>());
-                var plank = Template(dir[PaintingIndex], holder.transform, "641 wood plank", looks[0], wood, PlankIndex, "wood plank", 46, 9.375f, false);
+                var plank = Template(dir[PaintingIndex], holder.transform, "641 wood plank", looks[0], wood, PlankIndex, "wood plank", 46, Rules.PlankMass0, false);
                 var plankItem = plank.GetComponent<ShipItem>(); plankItem.health = 0; plankItem.amount = 0;   // look 0, no hammering yet
                 // By one end it is held as the pole's staff (WoodPoles.HeldPose): the same held look, shown by PlankMark.
                 var rootLook = plank.GetComponent<MeshRenderer>();
@@ -404,9 +471,12 @@ namespace TentandPlank
         internal static int Look(ShipItem plank) => Shape(plank).look;
         internal static bool EndMode(ShipItem plank) => IsPlank(plank) && Shape(plank).end;
         internal static float Length(ShipItem plank) => Rules.PlankLength(Shape(plank).length);
-        internal static float Width(ShipItem plank) => Rules.PlankWidth(Shape(plank).width);
+        internal static float Width(ShipItem plank) => Rules.PlankWidth(Shape(plank));
+        internal static float Thick(ShipItem plank) => Rules.PlankThick(Shape(plank).thick);
+        // Its thickness only once thicker than today's (BOARD_PLANK_DRAFT.md, 2026-11-08).
         internal static string SizeText(ShipItem plank) =>
-            Length(plank).ToString(Shape(plank).length == 0 ? "F2" : "F1", CultureInfo.InvariantCulture) + " m x " + Width(plank).ToString("F2", CultureInfo.InvariantCulture) + " m";   // today's 0.87 m, not rounded to 0.9
+            Length(plank).ToString(Shape(plank).length == 0 ? "F2" : "F1", CultureInfo.InvariantCulture) + " m x " + Width(plank).ToString("F2", CultureInfo.InvariantCulture) + " m"   // today's 0.87 m, not rounded to 0.9
+            + (Shape(plank).thick > 0 ? " x " + Thick(plank).ToString("F2", CultureInfo.InvariantCulture) + " m" : "");
         internal static void SetLook(ShipItem plank, int look) { var s = Shape(plank); s.look = look >= 0 && look < Looks ? look : 0; SetShape(plank, s); }
         internal static void SetShape(ShipItem plank, Rules.PlankShape s) { if (!plank) return; plank.health = Rules.PlankCode(s); ApplyLook(plank); }
         // After spawning, loading or a change: today's look mesh for today's plank lying flat, else one made at its size and mode
@@ -424,7 +494,7 @@ namespace TentandPlank
             plank.mass = Rules.PlankMass(s);
             if (body && body.GetBody()) body.UpdateMass();
         }
-        // A plank at another size or by one end: a box of its length, width and 45 mm, its wood from its look's piece of the atlas by the
+        // A plank at another size or by one end: a box of its length, width and thickness (45 mm at 1.0x), its wood from its look's piece of the atlas by the
         // look mesh's own mapping (MapOf): along its length mirrored back every 0.872 m (as the pole's grain), across its width one board
         // stretched to it. Flat, as the look meshes lie (length along x, width along y, from its back face at z 0 out to -z, centred where
         // they are); by one end as the pole stands (its end at the pivot, its length along -z, its width along x, its thickness along y).
@@ -434,7 +504,11 @@ namespace TentandPlank
             float key = Rules.PlankCode(s);
             if (made.TryGetValue(key, out var cached) && cached) return cached;
             var map = MapOf(s.look);
-            float L = Rules.PlankLength(s.length), W = Rules.PlankWidth(s.width), T = Rules.PlankThickness, L0 = Rules.PlankLength0, W0 = Rules.PlankWidth0;
+            float L = Rules.PlankLength(s.length), W = Rules.PlankWidth(s), T = Rules.PlankThick(s.thick), L0 = Rules.PlankLength0, W0 = Rules.PlankWidth0;
+            // The long edges' wood across the thickness as it is up to one board's width; a thicker plank (BOARD_PLANK_DRAFT.md: up to 1 m)
+            // stretches that board over it, as a wide face does, so its edge never reads past its piece of the atlas. The ends' grain the same
+            // way, up to one board's length (0.872 m; the thickest is 1 m).
+            float edge = Math.Min(T, W0), endGrain = Math.Min(T, L0);
             var v = new List<Vector3>(); var n = new List<Vector3>(); var uv = new List<Vector2>(); var tri = new List<int>();
             // A point along it (sl from its end), across it (sw from its side), out of its back (z): where it lies, and a normal turned the same.
             Vector3 At(float sl, float sw, float z) => s.end ? new Vector3(sw - W / 2, z + T / 2, -sl) : new Vector3(map.centre.x - L / 2 + sl, map.centre.y - W / 2 + sw, z);
@@ -463,15 +537,15 @@ namespace TentandPlank
                         Quad(At(a0, c0, z), At(a1, c0, z), At(a1, c1, z), At(a0, c1, z), Turn(z == 0 ? Vector3.forward : Vector3.back), Wood(g0, 0), Wood(g1, 0), Wood(g1, w1), Wood(g0, w1));
                 }
                 foreach (var (sw, normal) in new[] { (0f, Vector3.down), (W, Vector3.up) })   // its two long edges
-                    Quad(At(a0, sw, 0), At(a1, sw, 0), At(a1, sw, -T), At(a0, sw, -T), Turn(normal), map.Uv(g0, 0), map.Uv(g1, 0), map.Uv(g1, T), map.Uv(g0, T));   // its thickness, not stretched
+                    Quad(At(a0, sw, 0), At(a1, sw, 0), At(a1, sw, -T), At(a0, sw, -T), Turn(normal), map.Uv(g0, 0), map.Uv(g1, 0), map.Uv(g1, edge), map.Uv(g0, edge));   // its thickness, not stretched up to a board's width
             }
             for (int j = 0; j + 1 < acrossCuts.Count; j++)
             {
                 float c0 = acrossCuts[j], c1 = acrossCuts[j + 1], w1 = c1 - c0;
                 foreach (var (sl, normal) in new[] { (0f, Vector3.left), (L, Vector3.right) })   // its two ends
-                    Quad(At(sl, c0, 0), At(sl, c1, 0), At(sl, c1, -T), At(sl, c0, -T), Turn(normal), Wood(0, 0), Wood(0, w1), Wood(T, w1), Wood(T, 0));
+                    Quad(At(sl, c0, 0), At(sl, c1, 0), At(sl, c1, -T), At(sl, c0, -T), Turn(normal), Wood(0, 0), Wood(0, w1), Wood(endGrain, w1), Wood(endGrain, 0));
             }
-            var m = new Mesh { name = "wood plank " + L.ToString("F1", CultureInfo.InvariantCulture) + " x " + W.ToString("F3", CultureInfo.InvariantCulture) + (s.end ? " by one end" : "") };
+            var m = new Mesh { name = "wood plank " + L.ToString("F1", CultureInfo.InvariantCulture) + " x " + W.ToString("F3", CultureInfo.InvariantCulture) + " x " + T.ToString("F3", CultureInfo.InvariantCulture) + (s.end ? " by one end" : "") };
             m.SetVertices(v); m.SetNormals(n); m.SetUVs(0, uv); m.SetTriangles(tri, 0);
             m.RecalculateBounds(); m.RecalculateTangents();
             return made[key] = m;
@@ -528,7 +602,10 @@ namespace TentandPlank
         // H's two modes as the user names them (2026-10-24, word for word: "add notification when change between mode for plank, placement
         // mode (after press H), and repair mode"): repair mode flat (today's, the hull repair's), placement mode by one end.
         // The user's words (2026-10-24): 'Only show "Placement mode (Q/E length, O/L width)"', 'only show "Repair mode"'.
-        internal const string PlacementNotice = "Placement mode (Q/E length, O/L width)", RepairNotice = "Repair mode";
+        // With the thickness and the configurator's keys (BOARD_PLANK_DRAFT.md, 2026-11-08): "Placement mode (Q/E length, O/L width, I/K thickness)"
+        // by default.
+        internal static string PlacementNotice => "Placement mode (" + RodKeys.LengthPair(false) + " length, " + RodKeys.WidthPair(false) + " width, " + RodKeys.ThickPair() + " thickness)";
+        internal const string RepairNotice = "Repair mode";
         internal static void SwitchMode(ShipItem plank)
         {
             if (PoleCarry.Carries(plank)) { Notice.Show(PoleCarry.LengthFixed); return; }   // what is on it would be left off it
@@ -597,7 +674,7 @@ namespace TentandPlank
             return null;
         }
         // Water-damaged lumber gives fewer planks: the full count times its sale factor (77 of 128 at 50% water damage).
-        internal static int PlankCount(ShipItem item) => Rules.Round((Index(item) == LumberIndex ? 128 : 8) * CargoCondition.Factor(item));
+        internal static int PlankCount(ShipItem item) => Rules.Round((Index(item) == LumberIndex ? 128 : Rules.PlankBundleCount) * CargoCondition.Factor(item));
         internal static void Ask(ShipItem item)
         {
             string reason = BlockReason(item); if (reason != null) { if (reason.Length > 0) Notice.Show(reason); return; }
@@ -1274,7 +1351,7 @@ namespace TentandPlank
         {
             if (!IsRod(rod)) return 0;
             float side = Vector3.Dot(turn * Vector3.right, normal), up = Vector3.Dot(turn * Vector3.up, normal);
-            return IsPole(rod) ? Rules.RestLift(side, up, Diameter(rod) / 2, Diameter(rod) / 2, true) : Rules.RestLift(side, up, WoodPlanks.Width(rod) / 2, Rules.PlankThickness / 2, false);
+            return IsPole(rod) ? Rules.RestLift(side, up, Diameter(rod) / 2, Diameter(rod) / 2, true) : Rules.RestLift(side, up, WoodPlanks.Width(rod) / 2, WoodPlanks.Thick(rod) / 2, false);
         }
         private static readonly MethodInfo setUpTargeter = AccessTools.Method(typeof(ShipItem), "SetUpTargeter");
         // After the game's own wall test of the frame (ShipItem.Update): its spot (in the space of the pole's physics copy, which the
@@ -1293,6 +1370,7 @@ namespace TentandPlank
             var straight = attachRot(held); var normal = straight * Vector3.back;
             attachRot(held) = Tipped(normal, straight, t, l, toCopy * held.held.transform.right);
             attachPos(held) += normal * RestLift(held, attachRot(held), normal);   // resting on the surface, not half in it
+            SeeRest(held, normal);
             try { setUpTargeter.Invoke(held, new object[] { attachPos(held), attachRot(held), held.GetComponent<MeshFilter>().sharedMesh }); }
             catch (Exception e) { Plugin.Log?.LogWarning("The tilted pole's ghost could not be drawn: " + (e.InnerException ?? e).Message); }
         }
@@ -1320,8 +1398,9 @@ namespace TentandPlank
         // game's rotate key, held with the wheel to lean the pole (LeanScroll; the user, 2026-10-17): not braced, a tap lengthens when
         // it is let go, and Q held without the wheel lengthens after 0.4 s and repeats, both only while the wheel hasn't leaned since
         // Q went down. Braced, Q is only the length key (the wheel leans nothing then): it lengthens as it goes down and, held,
-        // repeats after 0.4 s, as E does.
-        private static KeyCode repeating; private static float repeatAt;
+        // repeats after 0.4 s, as E does. The keys are the configurator's (RodKeys, 2026-11-08; Q and E by default): the tap and hold
+        // rules of Q are the longer key's whatever it is set to (the lean stays the game's rotate key with the wheel).
+        private static bool repeating; private static float repeatAt;
         internal const float TapSeconds = .4f;
         private static bool qHeld, qBraced, qRepeated; private static int qDownFrame; private static float qRepeatAt;
         internal static Func<bool> TestQKey;   // tests hold Q with this (no key can be pressed in a test)
@@ -1385,7 +1464,7 @@ namespace TentandPlank
             }
             var at = eye.GetPoint(near);
             var turn = Mathf.Abs(normal.y) > .8f ? Quaternion.LookRotation(-normal, held.transform.up) : Quaternion.LookRotation(-normal, Vector3.up);
-            if (IsRod(held)) { turn = Tipped(normal, turn, Tilt(held), SeenLean(held), held.held.transform.right); at += normal * RestLift(held, turn, normal); }   // a held rod's tilt and lean, resting on it (LeanOnWall)
+            if (IsRod(held)) { turn = Tipped(normal, turn, Tilt(held), SeenLean(held), held.held.transform.right); at += normal * RestLift(held, turn, normal); SeeRest(held, normal); }   // a held rod's tilt and lean, resting on it (LeanOnWall)
             inRangeOfWall(held) = true; attachPos(held) = at; attachRot(held) = turn; AimedPole = target; AimedAt = new Pose(at, turn);
             // The green ghost straight at the spot, by the game's targeter: its own SetUpTargeter takes the spot as relative to the
             // held item's physics copy, which is not where the item is drawn (aboard, on her walk copy; on land, measured 0.9 m
@@ -1438,23 +1517,31 @@ namespace TentandPlank
         }
 
         // Picked up: its length and the keys, or that things locked on it fix its length (the user, 2026-10-13).
-        internal static string PickupNotice(ShipItem pole) => "Wood pole " + SizeText(pole) + (PoleCarry.Carries(pole) ? " (things on it: size fixed)" : " (Q/E: length, O/L: diameter)");
+        internal static string PickupNotice(ShipItem pole) => "Wood pole " + SizeText(pole) + (PoleCarry.Carries(pole) ? " (things on it: size fixed)" : " (" + RodKeys.LengthPair(true) + ": length, " + RodKeys.WidthPair(true) + ": diameter)");
         internal static void Keys(GoPointer pointer)
         {
             var held = pointer ? pointer.GetHeldItem() as ShipItem : null;
             PoleBrace.Keys(pointer, held);
             WoodPlanks.ModeKey(pointer, held);
             // Q/E the length of a rod (a plank only by one end: the user, "length and width only work in placement mode (after pressing
-            // H)"), O/L a plank's width.
-            if (!GameState.playing || !IsRod(held) || !held.sold || held.nailed) { repeating = KeyCode.None; qHeld = false; widthRepeating = KeyCode.None; return; }
+            // H)"), O/L a plank's width, I/K its thickness; each the configurator's key (RodKeys).
+            if (!GameState.playing || !IsRod(held) || !held.sold || held.nailed)
+            {
+                repeating = false; qHeld = false;
+                if (!PointedKeys(pointer)) { widthRepeating = 0; thickRepeating = 0; lengthRepeating = 0; }
+                return;
+            }
+            bool pole = IsPole(held);
             WidthKeys(held);   // a plank's width, a pole's diameter
+            if (WoodPlanks.IsPlank(held)) PlankThickKeys(held);
             int step = 0; float now = Time.unscaledTime;
-            if (Input.GetKeyDown(KeyCode.E)) { step = -1; repeating = KeyCode.E; repeatAt = now + .4f; }
-            else if (repeating == KeyCode.E && Input.GetKey(KeyCode.E) && now >= repeatAt) { step = -1; repeatAt = now + .08f; }
-            if (repeating == KeyCode.E && !Input.GetKey(KeyCode.E)) repeating = KeyCode.None;
+            var shorter = RodKeys.Shorter(pole); var longer = RodKeys.Longer(pole);
+            if (RodKeys.Down(shorter)) { step = -1; repeating = true; repeatAt = now + .4f; }
+            else if (repeating && RodKeys.Held(shorter) && now >= repeatAt) { step = -1; repeatAt = now + .08f; }
+            if (repeating && !RodKeys.Held(shorter)) repeating = false;
             bool q, qDown;
             if (TestQKey != null) { q = TestQKey(); qDown = q && !testQWas; testQWas = q; }
-            else { q = Input.GetKey(KeyCode.Q); qDown = Input.GetKeyDown(KeyCode.Q); testQWas = false; }
+            else { q = RodKeys.Held(longer); qDown = RodKeys.Down(longer); testQWas = false; }
             if (qDown)
             {
                 qHeld = true; qDownFrame = Time.frameCount; qBraced = PoleBrace.Braced == held; qRepeated = false; qRepeatAt = now + TapSeconds;
@@ -1464,64 +1551,233 @@ namespace TentandPlank
             if (qHeld && !q) { if (!qBraced && !qRepeated && leanFrame < qDownFrame) step = 1; qHeld = false; }
             if (step == 0) return;
             if (PoleCarry.Carries(held)) { Notice.Show(PoleCarry.LengthFixed); return; }   // what is on it would be left off it (PoleCarry)
-            if (WoodPlanks.IsPlank(held))
+            StepLength(held, step);
+        }
+        // One length step on a rod (held, or attached and pointed at): 0.1 m; a notice only at the shortest or longest (user, 2026-10-13: the hint text
+        // shows its length). Its pivot is its end (a pole's base, a plank's end face): the far end moves.
+        private static void StepLength(ShipItem rod, int step)
+        {
+            if (WoodPlanks.IsPlank(rod))
             {
-                var s = WoodPlanks.Shape(held); int to = Rules.PlankLengthStepped(s.length, step);
-                if (to != s.length) { s.length = to; WoodPlanks.SetShape(held, s); }
+                var s = WoodPlanks.Shape(rod); int to = Rules.PlankLengthStepped(s.length, step);
+                if (to != s.length) { s.length = to; WoodPlanks.SetShape(rod, s); }
                 float metres = Rules.PlankLength(to);
                 if (metres >= Rules.PlankMaxLength || metres <= Rules.PlankMinLength) Notice.Show("Wood plank " + Format(metres) + (metres >= Rules.PlankMaxLength ? " (longest)" : " (shortest)"));
                 return;
             }
-            float before = Length(held), after = Rules.PoleLength(before + step * Rules.PoleStep);
-            if (after != before) SetLength(held, after);
-            // A notice only at the shortest or longest (user, 2026-10-13): the pole's hint text shows its length.
+            float before = Length(rod), after = Rules.PoleLength(before + step * Rules.PoleStep);
+            if (after != before) SetLength(rod, after);
             if (after >= Rules.PoleMax || after <= Rules.PoleMin) Notice.Show("Wood pole " + Format(after) + (after >= Rules.PoleMax ? " (longest)" : " (shortest)"));
         }
+
+        // ---- Resized while pointed at, attached and not nailed (the user, 2026-11-08: "if the pole and plank is attached but not yet nailed, when
+        // pointing at it, player can adjust it's lengh/radius/width/thickness with the same button also, don't change the attached point";
+        // BOARD_PLANK_DRAFT.md, "Attached poles and planks resized while pointed at") ----
+        // The game points at an item that isn't nailed with empty hands, and with the hammer (it may nail any wall item: GoPointer.DoRaycast,
+        // ShipItemHammer.AllowOnItemClick); any other held item points at none. A pole, or a plank by one end (the user: "Placement mode only"), bought,
+        // attached (the game's wall drop; every wall item after a load), not in a slot, a crate or a box. The same keys as held, each acting as it goes
+        // down and, held, repeating after 0.4 s (Q too: with nothing held the wheel leans nothing; the game's own Q only stops its mouse look while held,
+        // MouseLook). Its attached end stays: a length moves only its far end; a tilted one made thicker or wider still rests on its surface, moved out
+        // along the surface's normal by the change of the attach's own lift (RestLift; the user: "Keep it resting"); a straight one doesn't move. None
+        // while things are fixed on it (PoleCarry.ThingsOn: they would be left in the air or inside it).
+        internal const KeyCode LongerKey = KeyCode.Q, ShorterKey = KeyCode.E;
+        internal static Func<KeyCode, bool> TestLengthKey;   // tests press Q or E on a pointed rod with this, once each call that returns true
+        private static int lengthRepeating; private static float lengthRepeatAt;
+        internal static ShipItem Pointed(GoPointer pointer)
+        {
+            var item = pointer ? pointer.GetPointedAtItem() : null;
+            if (!item || item == pointer.GetHeldItem() || !IsRod(item) || !item.sold || item.nailed || item.held) return null;
+            var copy = item.itemRigidbodyC;
+            return copy && copy.attached && !copy.GetCurrentInventorySlot() && !copy.GetCurrentBox() && !copy.inStove ? item : null;
+        }
+        private static bool PointedKeys(GoPointer pointer)
+        {
+            var rod = GameState.playing && !GameState.inCursorMenu ? Pointed(pointer) : null;
+            if (!rod) return false;
+            bool pole = IsPole(rod);
+            int length = TestLengthKey != null ? (TestLengthKey(LongerKey) ? 1 : TestLengthKey(ShorterKey) ? -1 : 0)
+                : PairStep(RodKeys.Longer(pole), RodKeys.Shorter(pole), ref lengthRepeating, ref lengthRepeatAt);
+            int width = WidthStep(pole), thick = pole ? 0 : ThickStep();
+            if (length != 0) ResizeAttached(rod, () => StepLength(rod, length), PoleCarry.LengthFixed);
+            if (width != 0) ResizeAttached(rod, () => StepWidth(rod, width), pole ? SizeFixed : PoleCarry.LengthFixed);
+            if (thick != 0) ResizeAttached(rod, () => StepThick(rod, thick), PoleCarry.LengthFixed);
+            return true;
+        }
+        private static void ResizeAttached(ShipItem rod, Action step, string refused)
+        {
+            if (PoleCarry.ThingsOn(rod)) { Notice.Show(refused); return; }
+            var normal = RestNormal(rod); var turn = rod.transform.rotation;
+            float before = normal.HasValue ? RestLift(rod, turn, turn * normal.Value) : 0;
+            step();
+            // shortcut: a tilted rod whose surface was found neither at its attach nor by FindRest keeps its pivot (a thicker end may reach into the
+            // surface); replace if the user meets one.
+            if (!normal.HasValue) return;
+            float lift = RestLift(rod, turn, turn * normal.Value) - before;
+            if (Mathf.Abs(lift) > 1e-5f) MoveAttached(rod, turn * normal.Value * lift);
+        }
+        // Moved where it is attached: drawn there and its physics copy with it (on land the same place, aboard on her walk copy: as Follow maps them).
+        private static void MoveAttached(ShipItem rod, Vector3 by)
+        {
+            var at = rod.transform.position + by; rod.transform.position = at;
+            var copy = rod.itemRigidbodyC; var boat = rod.currentActualBoat; var walk = rod.currentWalkCol;
+            var p = PoleBrace.onBoat(copy) && boat && walk ? walk.TransformPoint(boat.InverseTransformPoint(at)) : at;
+            copy.transform.position = p; var body = copy.GetBody(); if (body) body.position = p;
+        }
+        // The normal of the surface an attached rod rests on, in its own frame (it doesn't move on it while attached): kept from its attach (Attached),
+        // else found (FindRest) and kept.
+        private static readonly Dictionary<ShipItem, Vector3> restNormals = new Dictionary<ShipItem, Vector3>();
+        private static ShipItem restSeenBy; private static int restSeenFrame = -1; private static Vector3 restSeenNormal;
+        // The normal the frame's attach spot was turned and lifted on (LeanOnWall, AimAtPole), in the spot's own space.
+        private static void SeeRest(ShipItem held, Vector3 normal) { restSeenBy = held; restSeenFrame = Time.frameCount; restSeenNormal = normal; }
+        // After the game's drop and OnPoleDrop (PoleDropPatch): an attached rod keeps its surface's normal, seen this frame or, straight on the game's own
+        // wall spot, its spot's own (the game turns its +z into the surface: attachRot).
+        internal static void Attached(ShipItem rod)
+        {
+            if (!IsRod(rod) || !rod.itemRigidbodyC) return;
+            restNormals.Remove(rod);
+            foreach (var gone in restNormals.Keys.Where(k => !k).ToList()) restNormals.Remove(gone);
+            if (!rod.itemRigidbodyC.attached) return;
+            var turn = attachRot(rod);
+            restNormals[rod] = Quaternion.Inverse(turn) * (rod == restSeenBy && restSeenFrame == Time.frameCount ? restSeenNormal : turn * Vector3.back);
+        }
+        private static Vector3? RestNormal(ShipItem rod)
+        {
+            if (restNormals.TryGetValue(rod, out var n)) return n;
+            var found = FindRest(rod); if (found.HasValue) restNormals[rod] = found.Value;
+            return found;
+        }
+        // Without it (attached before this build, or loaded: the game saves where an item is, not what it rests on): rays from its pivot (2 cm out
+        // along it: a straight one's pivot lies on the surface) back along it and along its end face's four ways, in its physics copy's space (where the
+        // game's own wall ray found the spot; aboard her walk copy), a hit taken only where the rod rests on it by the attach's own lift (within 1 cm);
+        // the nearest such. Run only on a key press.
+        internal static Vector3? FindRest(ShipItem rod)
+        {
+            var copy = rod && rod.itemRigidbodyC ? rod.itemRigidbodyC.transform : null; if (!copy) return null;
+            var turn = copy.rotation; var pivot = copy.position; var from = pivot + turn * Vector3.back * .02f;
+            Vector3? best = null; float near = float.MaxValue;
+            foreach (var way in new[] { Vector3.forward, Vector3.right, Vector3.left, Vector3.up, Vector3.down })
+            {
+                var dir = turn * way;
+                foreach (var h in Physics.RaycastAll(from, dir, 2.5f, ~0, QueryTriggerInteraction.Ignore))
+                {
+                    var c = h.collider.transform;
+                    if (h.distance >= near || c.IsChildOf(rod.transform) || c.IsChildOf(copy) || Vector3.Dot(h.normal, dir) >= 0) continue;
+                    if (Mathf.Abs(Vector3.Dot(pivot - h.point, h.normal) - RestLift(rod, turn, h.normal)) > .01f) continue;
+                    near = h.distance; best = Quaternion.Inverse(turn) * h.normal;
+                }
+            }
+            return best;
+        }
+        internal static bool KeepsRest(ShipItem rod) => rod && restNormals.ContainsKey(rod);   // for tests
+        internal static void ForgetRest(ShipItem rod) { if (rod) restNormals.Remove(rod); }   // for tests: as after a load
         // O wider, L narrower (the user, 2026-10-24: "change to O/L instead"; Z/C until then, and C is the game's camera mode key), a
         // quarter of today's width a press (K4, the user: "K4 use 0.25x then"), held: repeats after 0.4 s, as E. A pole's diameter the
         // same keys, 0.2x a press from 1.0x to 10.0x, whenever held as Q/E (the user, 2026-10-24: "press O/L to increase/decrease
-        // diameter"; "Whenever held, as Q/E").
+        // diameter"; "Whenever held, as Q/E"). The keys the configurator's (RodKeys, 2026-11-08; O and L by default). WiderKey and
+        // NarrowerKey name the two for the tests' hook (TestWidthKey), whatever keys are set.
         internal const KeyCode WiderKey = KeyCode.O, NarrowerKey = KeyCode.L;
         internal const string SizeFixed = "Diameter fixed: things on the pole";
-        private static KeyCode widthRepeating; private static float widthRepeatAt;
+        private static int widthRepeating; private static float widthRepeatAt;
         internal static Func<KeyCode, bool> TestWidthKey;   // tests press O or L with this, once each call that returns true
         private static void WidthKeys(ShipItem rod)
         {
             if (IsPole(rod)) { DiameterKeys(rod); return; }
             if (WoodPlanks.IsPlank(rod)) PlankWidthKeys(rod);
         }
+        // One width step on a rod (held, or attached and pointed at): a pole's diameter, a plank's width.
+        private static void StepWidth(ShipItem rod, int step) { if (IsPole(rod)) StepDiameter(rod, step); else if (WoodPlanks.IsPlank(rod)) StepPlankWidth(rod, step); }
         private static void DiameterKeys(ShipItem pole)
         {
-            int step = WidthStep(); if (step == 0) return;
+            int step = WidthStep(true); if (step == 0) return;
             if (PoleCarry.Carries(pole)) { Notice.Show(SizeFixed); return; }
+            StepDiameter(pole, step);
+        }
+        private static void StepDiameter(ShipItem pole, int step)
+        {
             int was = DiameterSteps(pole), to = Mathf.Clamp(was + step, 0, Rules.PoleMaxDiameterSteps);
             if (to != was) SetShape(pole, Length(pole), to);
             if (to >= Rules.PoleMaxDiameterSteps || to <= 0) Notice.Show("Wood pole " + (Diameter(pole) * 100).ToString("F1", CultureInfo.InvariantCulture) + " cm across" + (to >= Rules.PoleMaxDiameterSteps ? " (thickest)" : " (thinnest)"));
         }
-        // O (+1) or L (-1) this frame, held: repeating after 0.4 s.
-        private static int WidthStep()
+        // O (+1) or L (-1) this frame (the configurator's keys), held: repeating after 0.4 s.
+        private static int WidthStep(bool pole) =>
+            TestWidthKey != null ? (TestWidthKey(WiderKey) ? 1 : TestWidthKey(NarrowerKey) ? -1 : 0)
+            : PairStep(pole ? RodKeys.PoleThicker : RodKeys.PlankWider, pole ? RodKeys.PoleThinner : RodKeys.PlankNarrower, ref widthRepeating, ref widthRepeatAt);
+        // A pair of keys' step this frame: +1 the first went down, -1 the second; the one held repeats after 0.4 s, every 0.08 s.
+        private static int PairStep(BepInEx.Configuration.KeyboardShortcut up, BepInEx.Configuration.KeyboardShortcut down, ref int held, ref float at)
         {
             int step = 0; float now = Time.unscaledTime;
-            if (TestWidthKey != null) { step = TestWidthKey(WiderKey) ? 1 : TestWidthKey(NarrowerKey) ? -1 : 0; }
-            else
+            foreach (var (key, dir) in new[] { (up, 1), (down, -1) })
             {
-                foreach (var (key, dir) in new[] { (WiderKey, 1), (NarrowerKey, -1) })
-                {
-                    if (Input.GetKeyDown(key)) { step = dir; widthRepeating = key; widthRepeatAt = now + TapSeconds; }
-                    else if (widthRepeating == key && Input.GetKey(key) && now >= widthRepeatAt) { step = dir; widthRepeatAt = now + .08f; }
-                    if (widthRepeating == key && !Input.GetKey(key)) widthRepeating = KeyCode.None;
-                }
+                if (RodKeys.Down(key)) { step = dir; held = dir; at = now + TapSeconds; }
+                else if (held == dir && RodKeys.Held(key) && now >= at) { step = dir; at = now + .08f; }
+                if (held == dir && !RodKeys.Held(key)) held = 0;
             }
             return step;
         }
         private static void PlankWidthKeys(ShipItem plank)
         {
-            int step = WidthStep(); if (step == 0) return;
+            int step = WidthStep(false); if (step == 0) return;
             if (PoleCarry.Carries(plank)) { Notice.Show(PoleCarry.LengthFixed); return; }
-            var s = WoodPlanks.Shape(plank); int to = Mathf.Clamp(s.width + step, Rules.PlankMinWidthSteps, Rules.PlankMaxWidthSteps);
-            if (to != s.width) { s.width = to; WoodPlanks.SetShape(plank, s); }
-            if (to >= Rules.PlankMaxWidthSteps || to <= Rules.PlankMinWidthSteps) Notice.Show("Wood plank " + WoodPlanks.Width(plank).ToString("F2", CultureInfo.InvariantCulture) + " m wide" + (to >= Rules.PlankMaxWidthSteps ? " (widest)" : " (narrowest)"));
+            StepPlankWidth(plank, step);
         }
+        private static void StepPlankWidth(ShipItem plank, int step)
+        {
+            // to the next size on the 50 mm grid (Rules.PlankWider; the user, 2026-11-08: "50 mm steps"), a notice at 0.05 m and 1 m
+            var s = WoodPlanks.Shape(plank); var to = Rules.PlankWider(s, step);
+            if (to.grid != s.grid || to.width != s.width) WoodPlanks.SetShape(plank, to);
+            if (to.grid >= Rules.PlankGridSizes || to.grid <= 1) Notice.Show("Wood plank " + WoodPlanks.Width(plank).ToString("F2", CultureInfo.InvariantCulture) + " m wide" + (to.grid >= Rules.PlankGridSizes ? " (widest)" : " (narrowest)"));
+        }
+        // I thicker, K thinner (BOARD_PLANK_DRAFT.md; the user, 2026-11-08: "use IK for control", "placement mode", then the 50 mm grid: "the width
+        // and thickness's step should be matching so player can create proper square beam", "50 mm steps"): today's 45 mm, then 0.05 m to 1 m in
+        // 0.05 m a press, only in placement mode (a plank is a rod only by one end), held: repeating as O/L;
+        // a notice only at the limits; none while things are on it. ThickerKey and ThinnerKey name the two for the tests' hook.
+        internal const KeyCode ThickerKey = KeyCode.I, ThinnerKey = KeyCode.K;
+        private static int thickRepeating; private static float thickRepeatAt;
+        internal static Func<KeyCode, bool> TestThickKey;   // tests press I or K with this, once each call that returns true
+        private static int ThickStep() => TestThickKey != null ? (TestThickKey(ThickerKey) ? 1 : TestThickKey(ThinnerKey) ? -1 : 0)
+            : PairStep(RodKeys.PlankThicker, RodKeys.PlankThinner, ref thickRepeating, ref thickRepeatAt);
+        private static void PlankThickKeys(ShipItem plank)
+        {
+            int step = ThickStep();
+            if (step == 0) return;
+            if (PoleCarry.Carries(plank)) { Notice.Show(PoleCarry.LengthFixed); return; }
+            StepThick(plank, step);
+        }
+        private static void StepThick(ShipItem plank, int step)
+        {
+            var s = WoodPlanks.Shape(plank); int to = Mathf.Clamp(s.thick + step, 0, Rules.PlankMaxThickSteps);
+            if (to != s.thick) { s.thick = to; WoodPlanks.SetShape(plank, s); }
+            if (to >= Rules.PlankMaxThickSteps || to <= 0) Notice.Show("Wood plank " + WoodPlanks.Thick(plank).ToString("F3", CultureInfo.InvariantCulture) + " m thick" + (to >= Rules.PlankMaxThickSteps ? " (thickest)" : " (thinnest)"));
+        }
+    }
+    // ---- The pole's and plank's size keys in the configurator (BOARD_PLANK_DRAFT.md; the user, 2026-11-08: "Add hotkey configuration for
+    // length/radius control of poles, and lenght/width/thickness control of plank in configurator") ----
+    // Each a shortcut set by a key press, as the brace key (Settings: "Wood pole" and "Wood plank"), read as the brace key is (PoleBrace.KeyDown):
+    // its main key with its modifiers held, not refused while another key is down (walking, or Q held).
+    internal static class RodKeys
+    {
+        private static BepInEx.Configuration.KeyboardShortcut Get(BepInEx.Configuration.ConfigEntry<BepInEx.Configuration.KeyboardShortcut> entry, KeyCode fallback) =>
+            entry?.Value ?? new BepInEx.Configuration.KeyboardShortcut(fallback);
+        internal static BepInEx.Configuration.KeyboardShortcut PoleLonger => Get(Settings.PoleLongerKey, KeyCode.Q);
+        internal static BepInEx.Configuration.KeyboardShortcut PoleShorter => Get(Settings.PoleShorterKey, KeyCode.E);
+        internal static BepInEx.Configuration.KeyboardShortcut PoleThicker => Get(Settings.PoleThickerKey, KeyCode.O);
+        internal static BepInEx.Configuration.KeyboardShortcut PoleThinner => Get(Settings.PoleThinnerKey, KeyCode.L);
+        internal static BepInEx.Configuration.KeyboardShortcut PlankLonger => Get(Settings.PlankLongerKey, KeyCode.Q);
+        internal static BepInEx.Configuration.KeyboardShortcut PlankShorter => Get(Settings.PlankShorterKey, KeyCode.E);
+        internal static BepInEx.Configuration.KeyboardShortcut PlankWider => Get(Settings.PlankWiderKey, KeyCode.O);
+        internal static BepInEx.Configuration.KeyboardShortcut PlankNarrower => Get(Settings.PlankNarrowerKey, KeyCode.L);
+        internal static BepInEx.Configuration.KeyboardShortcut PlankThicker => Get(Settings.PlankThickerKey, KeyCode.I);
+        internal static BepInEx.Configuration.KeyboardShortcut PlankThinner => Get(Settings.PlankThinnerKey, KeyCode.K);
+        internal static BepInEx.Configuration.KeyboardShortcut Longer(bool pole) => pole ? PoleLonger : PlankLonger;
+        internal static BepInEx.Configuration.KeyboardShortcut Shorter(bool pole) => pole ? PoleShorter : PlankShorter;
+        internal static bool Down(BepInEx.Configuration.KeyboardShortcut k) => k.MainKey != KeyCode.None && Input.GetKeyDown(k.MainKey) && Mods(k);
+        internal static bool Held(BepInEx.Configuration.KeyboardShortcut k) => k.MainKey != KeyCode.None && Input.GetKey(k.MainKey) && Mods(k);
+        private static bool Mods(BepInEx.Configuration.KeyboardShortcut k) { foreach (var m in k.Modifiers) if (!Input.GetKey(m)) return false; return true; }
+        // A key's name as the hints show it ("-" for one set to nothing), a pair as "Q/E".
+        internal static string Name(BepInEx.Configuration.KeyboardShortcut k) => k.MainKey == KeyCode.None ? "-" : k.ToString();
+        internal static string LengthPair(bool pole) => Name(Longer(pole)) + "/" + Name(Shorter(pole));
+        internal static string WidthPair(bool pole) => pole ? Name(PoleThicker) + "/" + Name(PoleThinner) : Name(PlankWider) + "/" + Name(PlankNarrower);
+        internal static string ThickPair() => Name(PlankThicker) + "/" + Name(PlankThinner);
     }
     // Shows the held look while the pole is in a hand, the pole itself otherwise; switched only when that changes.
     internal sealed class PoleHeldLook : MonoBehaviour
@@ -1576,10 +1832,13 @@ namespace TentandPlank
             var eye = cam.transform;
             root.position = eye.position + eye.forward * Ahead - Vector3.up * (Down + Below);
             root.LookAt(eye);   // as LookUI turns itself to the camera
-            string line = (WoodPlanks.IsPlank(held) ? "wood plank " + WoodPlanks.SizeText(held) : "wood pole " + WoodPoles.SizeText(held)) + WoodPoles.AngleText(held, degreeSign);
+            string line = (WoodPlanks.IsPlank(held) ? "wood plank " + WoodPlanks.SizeText(held) : "wood pole " + WoodPoles.SizeText(held)) + WeightText(held) + WoodPoles.AngleText(held, degreeSign);
             if (Text.text != line) Text.text = line;
             if (!root.gameObject.activeSelf) root.gameObject.SetActive(true);
         }
+        // Its own weight after its size with the configurator's "Show pole and plank weight" (the user, 2026-11-08: "also add a configurator option, default
+        // off, when enable, show the weight of the current plank/pole on the text also"): ", 10.0 lb" (one decimal under 100 lb, whole pounds above).
+        internal static string WeightText(ShipItem rod) => !Settings.RodWeightShown || !rod ? "" : Rules.WeightText(rod.mass);
         private static bool Make(LookUI look)
         {
             var source = hintText(look); if (!source) return false;
@@ -1988,7 +2247,7 @@ namespace TentandPlank
     { static void Postfix(GoPointer __instance) { if (!WoodPoles.Registered) return; WoodPoles.Keys(__instance); WoodPlanks.Tables(__instance); WoodPoles.SeeHeld(__instance); PoleBrace.HoldTilt(); PoleBrace.Highlight(); PoleText.Update(__instance); } }
     // Dropped onto a pole aboard a ship: put on her where it was aimed (WoodPoles.OnPoleDrop), after the game's own drop.
     [HarmonyPatch(typeof(ShipItem), "OnDrop")] internal static class PoleDropPatch
-    { static void Postfix(ShipItem __instance) { if (WoodPoles.Registered && __instance.wallAttachment) WoodPoles.OnPoleDrop(__instance); } }
+    { static void Postfix(ShipItem __instance) { if (WoodPoles.Registered && __instance.wallAttachment) { WoodPoles.OnPoleDrop(__instance); WoodPoles.Attached(__instance); } } }
     // Any held wall item (a pole, a lantern hook, a hangable...; the user, 2026-10-13: not only poles) aimed at a nailed pole
     // attaches to it (WoodPoles.AimAtPole), after the game's own wall test of the frame. A braced pole is no wall item.
     // After Deft Hands' own turn of the spot (its WallAttachmentRollPatch): the pole's tilt and lean are turned last.
@@ -2114,6 +2373,14 @@ namespace TentandPlank
         internal static bool Riding(ShipItem item) => item && riding.ContainsKey(item);
         internal static Load Of(ShipItem pole) => pole && pole.itemRigidbodyC && loads.TryGetValue(pole.itemRigidbodyC, out var load) ? load : null;
         internal static bool Carries(ShipItem pole) => (Of(pole)?.things.Count ?? 0) > 0;
+        // What is fixed on a rod that is attached, not held (its load ended once it was fixed again, End: its things stay on it as plain wall items):
+        // found as its pick-up finds them (Fixed, On), on a key press or once a second for its hints (WoodPoles.PointedKeys, RodHints.ShowPointed).
+        internal static bool ThingsOn(ShipItem rod)
+        {
+            var all = rod && SaveLoadManager.instance ? SaveLoadManager.instance.GetCurrentPrefabs() : null; if (all == null) return false;
+            foreach (var p in all) { var c = p ? p.GetComponent<ShipItem>() : null; if (c && c != rod && Fixed(c) && On(rod, c)) return true; }
+            return false;
+        }
         internal static float Reach(ShipItem pole) => Of(pole)?.reach ?? WoodPoles.Length(pole);
         internal static float Mass(ShipItem pole) => Of(pole)?.mass ?? pole.mass;
         // Where the pole is drawn: in the hand its held look (braced, posed from its body), else itself.
@@ -3052,12 +3319,35 @@ namespace TentandPlank
         {
             var held = item as ShipItem;
             if (!global::Settings.controlsTextEnabled || !held || !held.sold || held.nailed || !(WoodPoles.IsPole(held) || WoodPlanks.IsPlank(held))) return;
-            var lines = Rules.RodHintLines(WoodPoles.IsPole(held), WoodPlanks.EndMode(held), PoleCarry.Carries(held), BraceKey());
+            bool pole = WoodPoles.IsPole(held);
+            var lines = Rules.RodHintLines(pole, WoodPlanks.EndMode(held), PoleCarry.Carries(held), BraceKey(), RodKeys.LengthPair(pole), RodKeys.WidthPair(pole), RodKeys.ThickPair());
             var text = controlsText(ui); if (!text || !Make(ui)) return;
             text.text = string.Join("\n", lines.Select(l => l.what));
             for (int i = 0; i < boxes.Length; i++)
             {
                 bool on = i < lines.Count; if (on && boxes[i].text != lines[i].key) boxes[i].text = lines[i].key;
+                if (on) boxes[i].transform.localPosition = lastLine - lineStep * (lines.Count - 1 - i);
+                if (boxes[i].gameObject.activeSelf != on) boxes[i].gameObject.SetActive(on);
+            }
+        }
+        // Pointed at, attached and not nailed (WoodPoles.Pointed; the user, 2026-11-08: "Show them"): its size keys above the game's own lines
+        // (Rules.PointedControlLines), none while things are fixed on it (looked for once a second, not every frame).
+        private static readonly AccessTools.FieldRef<LookUI, GoPointer> uiPointer = AccessTools.FieldRefAccess<LookUI, GoPointer>("pointer");
+        private static ShipItem fixedFor; private static float fixedUntil; private static bool fixedOn;
+        internal static void ShowPointed(LookUI ui, GoPointerButton button)
+        {
+            var rod = button as ShipItem;
+            if (!global::Settings.controlsTextEnabled || !rod || rod != WoodPoles.Pointed(uiPointer(ui))) return;
+            if (rod != fixedFor || Time.unscaledTime >= fixedUntil) { fixedFor = rod; fixedUntil = Time.unscaledTime + 1; fixedOn = PoleCarry.ThingsOn(rod); }
+            if (fixedOn) return;
+            bool pole = WoodPoles.IsPole(rod);
+            var sizes = Rules.RodSizeLines(pole, RodKeys.LengthPair(pole), RodKeys.WidthPair(pole), RodKeys.ThickPair());
+            var text = controlsText(ui); if (!text || !Make(ui)) return;
+            var lines = Rules.PointedControlLines(text.text, sizes, out int n);
+            text.text = string.Join("\n", lines);
+            for (int i = 0; i < boxes.Length; i++)
+            {
+                bool on = i < n; if (on && boxes[i].text != sizes[i].key) boxes[i].text = sizes[i].key;
                 if (on) boxes[i].transform.localPosition = lastLine - lineStep * (lines.Count - 1 - i);
                 if (boxes[i].gameObject.activeSelf != on) boxes[i].gameObject.SetActive(on);
             }
@@ -3073,7 +3363,7 @@ namespace TentandPlank
             var l = textLicon(ui); var r = textRIcon(ui); if (!l || !r) return false;
             lastLine = r.transform.localPosition; lineStep = r.transform.localPosition - l.transform.localPosition;
             var mouse = mouseRIcon(ui); string mousePath = mouse && mouse.transform != r.transform && mouse.transform.IsChildOf(r.transform) ? PathIn(r.transform, mouse.transform) : null;
-            boxes = new TextMesh[3];
+            boxes = new TextMesh[4];   // a plank in placement mode: length, width, thickness, H (BOARD_PLANK_DRAFT.md, 2026-11-08)
             for (int i = 0; i < boxes.Length; i++)
             {
                 var o = UnityEngine.Object.Instantiate(r.gameObject, r.transform.parent, false); o.name = "EconomyOverhaul key box " + i;
@@ -3091,6 +3381,8 @@ namespace TentandPlank
     { static void Postfix(LookUI __instance, PickupableItem item) { if (WoodPoles.Registered) RodHints.Show(__instance, item); } }
     [HarmonyPatch(typeof(LookUI), "HideIcons")] internal static class RodHintHidePatch
     { static void Postfix(LookUI __instance) => RodHints.Hide(__instance); }
+    [HarmonyPatch(typeof(LookUI), "ShowLookText")] internal static class RodPointedHintPatch
+    { static void Postfix(LookUI __instance, GoPointerButton button) { if (WoodPoles.Registered) RodHints.ShowPointed(__instance, button); } }
 
     // ---- The wood vendors ----
     // A new vendor beside the shipyard keeper of Gold Rock City, Dragon Cliffs and Fort Aestrin's vanilla yard (none at Chronos), and
@@ -4656,13 +4948,14 @@ namespace TentandPlank
             foreach (var c in UnityEngine.Object.FindObjectsOfType<Cloth>()) if (Array.IndexOf(RoofNames, c.name) >= 0 && c.GetComponentInParent<PurchasableBoat>()) roofs.Add(c);
             return roofs;
         }
-        // One of a cargo's cover rays: straight up from p (1 cm over its top) for `reach` metres, through a tarp's cover shape
-        // or a counted roof's cloth (neither has a collider). Cargo poking through a tarp starts its rays above it: open. A tarp
-        // worn to 0 covers nothing.
-        internal static bool CoverAbove(Vector3 p, float reach)
+        // One of a cargo's cover rays: up (the world's, or her own aboard) from p (1 cm over its top) for `reach` metres, through a tarp's
+        // cover shape or a counted roof's cloth (neither has a collider). Cargo poking through a tarp starts its rays above it: open. A
+        // tarp worn to 0 covers nothing.
+        internal static bool CoverAbove(Vector3 p, float reach) => CoverAbove(p, Vector3.up, reach);
+        internal static bool CoverAbove(Vector3 p, Vector3 up, float reach)
         {
             foreach (var t in Tarp.All)
-                if (t && t.cloth && t.isActiveAndEnabled && t.coverShape != null && t.Health > 0 && Crosses(t.cloth.transform, t.coverShape, t.layout.triangles, t.coverBounds, p, reach)) return true;
+                if (t && t.cloth && t.isActiveAndEnabled && t.coverShape != null && t.Health > 0 && Crosses(t.cloth.transform, t.coverShape, t.layout.triangles, t.coverBounds, p, up * reach)) return true;
             foreach (var c in CountedRoofs())
             {
                 var skin = c.GetComponent<SkinnedMeshRenderer>(); var mesh = skin ? skin.sharedMesh : null; if (!mesh) continue;
@@ -4670,13 +4963,13 @@ namespace TentandPlank
                 if (tris == null) continue;
                 var v = c.vertices; if (v.Length != mesh.vertexCount) v = mesh.vertices;   // welded cloth points: the modelled roof
                 var b = new Bounds(v[0], Vector3.zero); foreach (var x in v) b.Encapsulate(x);
-                if (Crosses(c.transform, v, tris, b, p, reach)) return true;
+                if (Crosses(c.transform, v, tris, b, p, up * reach)) return true;
             }
             return false;
         }
-        private static bool Crosses(Transform t, Vector3[] v, int[] tri, Bounds b, Vector3 p, float reach)
+        private static bool Crosses(Transform t, Vector3[] v, int[] tri, Bounds b, Vector3 p, Vector3 ray)
         {
-            Vector3 o = t.InverseTransformPoint(p), d = t.InverseTransformVector(Vector3.up * reach);
+            Vector3 o = t.InverseTransformPoint(p), d = t.InverseTransformVector(ray);
             var seg = new Bounds(o, Vector3.zero); seg.Encapsulate(o + d); if (!seg.Intersects(b)) return false;
             for (int i = 0; i + 2 < tri.Length; i += 3) if (Hits(o, d, v[tri[i]], v[tri[i + 1]], v[tri[i + 2]])) return true;
             return false;
