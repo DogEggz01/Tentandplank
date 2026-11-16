@@ -131,12 +131,13 @@ Difference is that Water damage, impact damage and tarp wearing is default off. 
 ## Configurator options
 - Water damage: toggle on/off. Default off
 - Water damage hint: show when pointing at cargo. Default on
+- Water damage speed and Drying speed.
 - Cargo Cover ratio: show when pointing at cargo. Default off
 - Fragile cargo damage: Toggle on/off. Default off.
 - Fragile cargo hint: default on.
 - Tarp Wearing: make tarp wear across 10 days. Default off.
 - Blue outline for wet cargo: toggle on/off.
 - Plank hammer time: 0s - 20s. Default 20s.
-- Plank repair amount: fixing fee equivelent(default) or 0.5% per plank.
+- Plank repair amount: fixing fee equivelent(default) or x% per plank(slider).
 - Plank/pole dimension adjustment hotkey change
 - Plank/pole weight hint: Default off.
