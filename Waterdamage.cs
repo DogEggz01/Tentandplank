@@ -69,16 +69,31 @@ namespace TentandPlank
         }
         // Only the open share dries, with the weather: drying falls in a straight line to nothing at full cover.
         public static double DryingPerHour(double exposed, double clouds, double hour) => Clamp(exposed, 0, 1) * OpenDryingPerHour(clouds, hour);
+        // The configurator's speeds (the user, 2026-11-16, for this mod, after EconomyOverhaul 1.2.1's of 2026-11-14: "Water damage speed:
+        // 0.25x, 0.5x, 0.75x, 1x(default)", "Drying speed: As water damage speed (default), 1x, 1.5x, 2x, 2.5x, 3x"): multipliers on the
+        // rates above (water aboard or the sea and rain; drying), nothing else (where cargo wets or dries, the ceilings and the ruin line
+        // stay). Indexed by Settings' enums. EconomyOverhaul's code, copied.
+        public static readonly double[] WaterDamageSpeeds = { .25, .5, .75, 1 };
+        public static readonly double[] DryingSpeeds = { 0, 1, 1.5, 2, 2.5, 3 };   // 0: as the water damage speed
+        public static double WaterDamageSpeed(int choice) => WaterDamageSpeeds[Math.Max(0, Math.Min(WaterDamageSpeeds.Length - 1, choice))];
+        public static double DryingSpeed(int choice, double waterDamageSpeed)
+        {
+            double speed = DryingSpeeds[Math.Max(0, Math.Min(DryingSpeeds.Length - 1, choice))];
+            return speed > 0 ? speed : waterDamageSpeed;
+        }
         // noDry: sealed liquids (alcohol and water). coverKnown: the shelter scan has run since the
-        // cargo settled. exposed: open share of the top face, 0-1. ceiling: how far this good dries back.
+        // cargo settled. exposed: open share of the top face, 0-1. ceiling: how far this good dries back. damageSpeed, dryingSpeed:
+        // the configurator's multipliers (1: as designed).
         public static float AdvanceCondition(float health, double gameHours, bool noDry, bool waterContact,
-            bool damagingWater, double rain, bool coverKnown, double exposed, double clouds, double hour, float ceiling = DryingCeiling)
+            bool damagingWater, double rain, bool coverKnown, double exposed, double clouds, double hour, float ceiling = DryingCeiling,
+            double damageSpeed = 1, double dryingSpeed = 1)
         {
             gameHours = Math.Max(0, gameHours);
-            double damage = (damagingWater ? ImmersionPerHour : 0) + (coverKnown ? RainDamagePerHour(rain, exposed) : 0);
+            double damage = ((damagingWater ? ImmersionPerHour : 0) + (coverKnown ? RainDamagePerHour(rain, exposed) : 0)) * Math.Max(0, damageSpeed);
             if (damage > 0) return (float)Math.Max(0, health - gameHours * damage);
+            if (damagingWater || coverKnown && RainDamagePerHour(rain, exposed) > 0) return health;   // getting wetter, only slower: no drying
             if (waterContact || rain > 0 || noDry || !coverKnown || Ruined(health) || health >= ceiling) return health;
-            return (float)Math.Min(ceiling, health + gameHours * DryingPerHour(exposed, clouds, hour));
+            return (float)Math.Min(ceiling, health + gameHours * DryingPerHour(exposed, clouds, hour) * Math.Max(0, dryingSpeed));
         }
         // Whether cargo is getting wetter now, the conditions AdvanceCondition takes condition off under (EconomyOverhaul's wet outline,
         // its SMALL_REQUESTS_DRAFT.md: "if it's out of the condition that will get wet, it don't show blue outline anymore", "rain should
@@ -449,12 +464,19 @@ namespace TentandPlank
         // rolled 45 degrees, 100% at 0). A cell whose line misses the cargo (a round barrel's box corners) is left out. Corners
         // and centre first: if those on the cargo agree (open deck or a full roof) the rest take the same value, unless something
         // was just set on top, when all are cast so a small item still counts. Aboard, "down" is the ship's own (F1,
-        // LOAD_WAKE_COVER_DRAFT.md): the reading is kept, so it must not hold her tilt of the moment. A scan aboard (other than the one the boat's
+        // LOAD_WAKE_COVER_DRAFT.md): the reading is kept, so it must not hold the ship's tilt of the moment. A scan aboard (other than the one the boat's
         // own move asks for) is checked once more after the boat has gone 100 m: a pier or a cliff it found may be behind.
+        // The ship roofs' cloth points are read once for the whole scan (Tarps.BeginScan; the deep review of 2026-11-09).
         private void ScanCover(bool full, bool afterMove = false)
         {
+            Tarps.BeginScan();
+            try { ScanCoverOnce(full, afterMove); }
+            finally { Tarps.EndScan(); }
+        }
+        private void ScanCoverOnce(bool full, bool afterMove)
+        {
             var boat = item.currentActualBoat; var walk = item.currentWalkCol;
-            // Whatever lies above the cargo counts, whatever its tilt. Aboard along her own up, so her heel of the moment isn't read (the
+            // Whatever lies above the cargo counts, whatever its tilt. Aboard along the ship's own up, so its heel of the moment isn't read (the
             // user, 2026-11-06, "Implement F1 only": a load or a sleep at sea read cargo at a cover's edge at 96% against 80%, kept until a
             // put-down; cl-5c). Past 45 degrees, or a hull whose frame isn't upright, straight up in the world. On land always the world's.
             Vector3 up = boat && boat.up.y > .7f ? boat.up : Vector3.up;
@@ -571,7 +593,7 @@ namespace TentandPlank
                 if (itemsOnly && !copy) continue;
                 if (hit.transform.IsChildOf(transform) || copy == item.itemRigidbodyC) continue;
                 if (CoverEvents.NotCover(hit.collider)) continue;   // an item in a hand, the inventory or the cart is never a roof
-                // nor the player's own body (aboard on her walk copy, layer 11; the deep review of 2026-11-02, Claude's fix)
+                // nor the player's own body (aboard on the ship's walk copy, layer 11; the deep review of 2026-11-02, Claude's fix)
                 if (Refs.charController && hit.collider.transform.IsChildOf(Refs.charController.transform)) continue;
                 return true;
             }
@@ -636,21 +658,23 @@ namespace TentandPlank
             bool coverKnown = state.exposure != 0;
             double exposed = coverKnown ? 1 - coveredFraction : 0;
             Wetting = Rules.WettingNow(damagingWater, rain, coverKnown, exposed);
-            double waterDamage = damagingWater ? elapsedHours * Rules.ImmersionPerHour : 0;
+            // The configurator's speeds scale the stains as they scale the condition, so the look keeps pace with it.
+            double damageSpeed = Settings.WaterDamageSpeed, dryingSpeed = Settings.DryingSpeed;
+            double waterDamage = damagingWater ? elapsedHours * Rules.ImmersionPerHour * damageSpeed : 0;
             // Stains: open cells get the full rain rate, covered cells none (the history applies the mask).
-            double rainDamage = coverKnown && exposed > 0 ? elapsedHours * Rules.RainDamagePerHour(rain, 1) : 0;
+            double rainDamage = coverKnown && exposed > 0 ? elapsedHours * Rules.RainDamagePerHour(rain, 1) * damageSpeed : 0;
             // Surface moisture may finish evaporating at the ceiling; the permanent stain never decreases. Liquids and
             // ruined cargo cannot dry; open cells dry with the weather and time of day, covered cells not at all.
             bool canDry = near && !LiquidCargo.Contains(state.good) && !Rules.Ruined(state.health) && depth <= 0 && rain == 0
                 && coverKnown && exposed > 0;
-            double dryOpen = canDry ? elapsedHours * Rules.OpenDryingPerHour(clouds, hour) : 0;
+            double dryOpen = canDry ? elapsedHours * Rules.OpenDryingPerHour(clouds, hour) * dryingSpeed : 0;
             if (waterDamage > 0 || rainDamage > 0 || history != null && canDry)
             {
                 EnsureHistory();
                 history.Accumulate(wetVolumes, waterDamage, rainDamage, dryOpen, coveredCells, transform.localToWorldMatrix, b);
             }
             state.health = Rules.AdvanceCondition(state.health, elapsedHours, LiquidCargo.Contains(state.good) || !near, depth > 0,
-                damagingWater, rain, coverKnown, exposed, clouds, hour, Rules.Ceiling(state.good));
+                damagingWater, rain, coverKnown, exposed, clouds, hour, Rules.Ceiling(state.good), damageSpeed, dryingSpeed);
             CaptureParent(); if (Math.Abs(visualHealth - state.health) >= .1f) RefreshAppearance();
         }
         private float WaterDepth(Bounds bounds)

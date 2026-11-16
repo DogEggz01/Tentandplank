@@ -25,7 +25,7 @@ namespace TentandPlank
     public sealed class Plugin : BaseUnityPlugin
     {
         public const string Guid = "DogEggz.TentandPlank";
-        public const string Version = "1.1.5";
+        public const string Version = "1.1.6";
         internal static ManualLogSource Log;
         internal static Plugin Instance;
         private Harmony harmony;
@@ -107,16 +107,57 @@ namespace TentandPlank
         // Hull repair with wood planks (the user, 2026-10-27): "Hammering time: a slider ... set time to 0-20s, 1s per step, this is
         // uncaulked time" (a caulked hull half, as before), "default still 20s"; "Plank needed: 2 buttons, 1 is current (name Fixing fee
         // equivalent), another is Fixed 0.5% per plank" (the caulking rules the same in both).
+        // The fixed button became a slider (the user, 2026-11-16, both mods: "Change the 0.5% hull damage per plank setting to slider, 0.5%
+        // step, range 0.5% to 10%, default 0.5%", then "only replace the fixed 0.5% per plank"): the fee button stays; the slider's percent is
+        // its own hidden entry, drawn in this one. The enum keeps its name FixedHalfPercent: config files store it by name.
         internal enum PlankCount { FeeEquivalent, FixedHalfPercent }
         internal static ConfigEntry<int> HammerTime;
         internal static ConfigEntry<PlankCount> PlanksNeeded;
+        internal static ConfigEntry<float> PlankRepairPercent;
         internal static float HammerSeconds => HammerTime?.Value ?? 20;
         internal static bool FixedPlanks => PlanksNeeded != null && PlanksNeeded.Value == PlankCount.FixedHalfPercent;
-        private static readonly string[] PlankCountNames = { "Fixing fee equivalent", "Fixed 0.5% per plank" };
+        internal static double FixedRepairPercent => Rules.PlankRepairPercent(PlankRepairPercent?.Value ?? .5);
         private static void PlankCountButtons(ConfigEntryBase entry)
         {
-            int was = (int)PlanksNeeded.Value, now = GUILayout.Toolbar(was, PlankCountNames, GUILayout.ExpandWidth(true));
-            if (now != was) PlanksNeeded.Value = (PlankCount)now;
+            bool wasFixed = FixedPlanks; float was = (float)FixedRepairPercent;
+            GUILayout.BeginVertical();
+            bool fee = GUILayout.Toggle(!wasFixed, "Fixing fee equivalent", "Button", GUILayout.ExpandWidth(true));
+            GUILayout.BeginHorizontal();
+            bool fix = GUILayout.Toggle(wasFixed, "Fixed " + Rules.PercentText(was) + "% per plank", "Button", GUILayout.Width(160));
+            float now = (float)Rules.PlankRepairPercent(GUILayout.HorizontalSlider(was, (float)Rules.PlankRepairLeast, (float)Rules.PlankRepairMost, GUILayout.ExpandWidth(true)));
+            GUILayout.EndHorizontal();
+            GUILayout.EndVertical();
+            // moving the slider picks the fixed way too
+            if (now != was) { PlankRepairPercent.Value = now; PlanksNeeded.Value = PlankCount.FixedHalfPercent; }
+            else if (fix && !wasFixed) PlanksNeeded.Value = PlankCount.FixedHalfPercent;
+            else if (fee && wasFixed) PlanksNeeded.Value = PlankCount.FeeEquivalent;
+        }
+        // Water damage and drying speeds (the user, 2026-11-16, for this mod, after EconomyOverhaul 1.2.1's of 2026-11-14: "Water damage
+        // speed: 0.25x, 0.5x, 0.75x, 1x(default)", "Drying speed: As water damage speed (default), 1x, 1.5x, 2x, 2.5x, 3x"); the multipliers:
+        // Rules.WaterDamageSpeeds, Rules.DryingSpeeds. EconomyOverhaul's code, copied.
+        internal enum WaterSpeed { Quarter, Half, ThreeQuarters, Normal }
+        internal enum DryingSpeedChoice { AsWaterDamage, Normal, OneAndHalf, Double, TwoAndHalf, Triple }
+        internal static ConfigEntry<WaterSpeed> WaterDamageSpeedOption;
+        internal static ConfigEntry<DryingSpeedChoice> DryingSpeedOption;
+        internal static double WaterDamageSpeed => Rules.WaterDamageSpeed(WaterDamageSpeedOption != null ? (int)WaterDamageSpeedOption.Value : 3);
+        internal static double DryingSpeed => Rules.DryingSpeed(DryingSpeedOption != null ? (int)DryingSpeedOption.Value : 0, WaterDamageSpeed);
+        private static readonly string[] WaterSpeedNames = { "0.25x", "0.5x", "0.75x", "1x" };
+        private static readonly string[] DryingSpeedNames = { "1x", "1.5x", "2x", "2.5x", "3x" };
+        private static void WaterSpeedButtons(ConfigEntryBase entry)
+        {
+            int was = (int)WaterDamageSpeedOption.Value, now = GUILayout.Toolbar(was, WaterSpeedNames, GUILayout.ExpandWidth(true));
+            if (now != was) WaterDamageSpeedOption.Value = (WaterSpeed)now;
+        }
+        // Six choices: "As water damage speed" is too long for a sixth of a row, so it has a row of its own over the five speeds.
+        private static void DryingSpeedButtons(ConfigEntryBase entry)
+        {
+            int was = (int)DryingSpeedOption.Value;
+            GUILayout.BeginVertical();
+            bool asWater = GUILayout.Toggle(was == 0, "As water damage speed", "Button", GUILayout.ExpandWidth(true));
+            int row = GUILayout.Toolbar(was == 0 ? -1 : was - 1, DryingSpeedNames, GUILayout.ExpandWidth(true));
+            GUILayout.EndVertical();
+            if (asWater && was != 0) DryingSpeedOption.Value = DryingSpeedChoice.AsWaterDamage;
+            else if (row >= 0 && row != was - 1) DryingSpeedOption.Value = (DryingSpeedChoice)(row + 1);
         }
         // Water damage and fragile cargo are off by default in this mod (the user, 2026-10-15); tarp wearing too (the user, 2026-10-24;
         // on in EconomyOverhaul).
@@ -137,7 +178,13 @@ namespace TentandPlank
                 "Enable cargo water damage, drying, wet appearance and condition-based value reductions. When off, saved condition pauses and cargo has full condition value. Re-enabling resumes the saved condition.");
             WaterDamageHint = config.Bind("Cargo", "Show water damage percentage", true,
                 "Show remaining water condition (100% to 0%) below vulnerable cargo hints. Hidden when water damage is disabled. This setting only changes the hint, not damage or cargo value.");
-            CoverHint = config.Bind("Cargo", "Show cover percentage", false,
+            WaterDamageSpeedOption = config.Bind("Cargo", "Water damage speed", WaterSpeed.Normal, new ConfigDescription(
+                "How fast cargo takes water damage, in water aboard, in the sea and in rain: 0.25x, 0.5x, 0.75x or 1x (the default). Where cargo gets wet stays the same. No effect while water damage is disabled.",
+                null, new ConfigurationManagerAttributes { CustomDrawer = WaterSpeedButtons }));
+            DryingSpeedOption = config.Bind("Cargo", "Drying speed", DryingSpeedChoice.AsWaterDamage, new ConfigDescription(
+                "How fast wet cargo dries: as the water damage speed (the default), or 1x, 1.5x, 2x, 2.5x or 3x. How far cargo dries back stays the same. No effect while water damage is disabled.",
+                null, new ConfigurationManagerAttributes { CustomDrawer = DryingSpeedButtons }));
+            CoverHint =config.Bind("Cargo", "Show cover percentage", false,
                 "Show how much of vulnerable cargo's top is under cover (a deck, a roof or a canvas tarp), 0% to 100%, below its water damage line. Hidden when water damage is disabled. This setting only changes the hint.");
             WetOutlineOption = config.Bind("Cargo", "Deep blue outline on wet cargo", true,
                 "When you look at cargo that is getting wetter right now (in water aboard or in the sea, or in rain with its top not fully covered), its outline is deep blue instead of the usual colour. Cargo that is already wet but out of the water and the rain shows the usual outline. Never shown while water damage is disabled.");
@@ -148,16 +195,16 @@ namespace TentandPlank
             BraceKey = config.Bind("Wood pole", "Brace key", new KeyboardShortcut(KeyCode.H),
                 "While holding a wood pole, this key braces it (held at your side, pointing forward: with the pick-up key held (the left mouse by default) it pushes boats, docks or the sea bed) or holds it loosely again.");
             KeyboardShortcut Key(KeyCode k) => new KeyboardShortcut(k);
-            PoleLongerKey = config.Bind("Wood pole", "Longer key", Key(KeyCode.Q), "While holding a wood pole, this key makes it 0.1 m longer (held: it keeps lengthening). Held with the mouse wheel, the game's rotate key leans the pole instead.");
-            PoleShorterKey = config.Bind("Wood pole", "Shorter key", Key(KeyCode.E), "While holding a wood pole, this key makes it 0.1 m shorter (held: it keeps shortening).");
-            PoleThickerKey = config.Bind("Wood pole", "Thicker key", Key(KeyCode.O), "While holding a wood pole, this key makes its diameter 0.2x bigger (up to 10x).");
-            PoleThinnerKey = config.Bind("Wood pole", "Thinner key", Key(KeyCode.L), "While holding a wood pole, this key makes its diameter 0.2x smaller (down to 1x).");
-            PlankLongerKey = config.Bind("Wood plank", "Longer key", Key(KeyCode.Q), "While holding a wood plank in placement mode, this key makes it 0.1 m longer (held: it keeps lengthening).");
-            PlankShorterKey = config.Bind("Wood plank", "Shorter key", Key(KeyCode.E), "While holding a wood plank in placement mode, this key makes it 0.1 m shorter (held: it keeps shortening).");
-            PlankWiderKey = config.Bind("Wood plank", "Wider key", Key(KeyCode.O), "While holding a wood plank in placement mode, this key makes it wider, to the next 0.05 m (up to 1 m).");
-            PlankNarrowerKey = config.Bind("Wood plank", "Narrower key", Key(KeyCode.L), "While holding a wood plank in placement mode, this key makes it narrower, to the next 0.05 m (down to 0.05 m).");
-            PlankThickerKey = config.Bind("Wood plank", "Thicker key", Key(KeyCode.I), "While holding a wood plank in placement mode, this key makes it thicker, to the next 0.05 m (up to 1 m).");
-            PlankThinnerKey = config.Bind("Wood plank", "Thinner key", Key(KeyCode.K), "While holding a wood plank in placement mode, this key makes it thinner, to the next 0.05 m (down to today's 45 mm).");
+            PoleLongerKey = config.Bind("Wood pole", "Longer key", Key(KeyCode.Q), "While holding a wood pole, or pointing at one attached and not nailed, this key makes it 0.1 m longer (held: it keeps lengthening). Held with the mouse wheel, the game's rotate key leans the pole instead.");
+            PoleShorterKey = config.Bind("Wood pole", "Shorter key", Key(KeyCode.E), "While holding a wood pole, or pointing at one attached and not nailed, this key makes it 0.1 m shorter (held: it keeps shortening).");
+            PoleThickerKey = config.Bind("Wood pole", "Thicker key", Key(KeyCode.O), "While holding a wood pole, or pointing at one attached and not nailed, this key makes its diameter 0.2x bigger (up to 10x).");
+            PoleThinnerKey = config.Bind("Wood pole", "Thinner key", Key(KeyCode.L), "While holding a wood pole, or pointing at one attached and not nailed, this key makes its diameter 0.2x smaller (down to 1x).");
+            PlankLongerKey = config.Bind("Wood plank", "Longer key", Key(KeyCode.Q), "While holding a wood plank in placement mode, or pointing at one attached by one end and not nailed, this key makes it 0.1 m longer (held: it keeps lengthening).");
+            PlankShorterKey = config.Bind("Wood plank", "Shorter key", Key(KeyCode.E), "While holding a wood plank in placement mode, or pointing at one attached by one end and not nailed, this key makes it 0.1 m shorter (held: it keeps shortening).");
+            PlankWiderKey = config.Bind("Wood plank", "Wider key", Key(KeyCode.O), "While holding a wood plank in placement mode, or pointing at one attached by one end and not nailed, this key makes it wider, to the next 0.05 m (up to 1 m).");
+            PlankNarrowerKey = config.Bind("Wood plank", "Narrower key", Key(KeyCode.L), "While holding a wood plank in placement mode, or pointing at one attached by one end and not nailed, this key makes it narrower, to the next 0.05 m (down to 0.05 m).");
+            PlankThickerKey = config.Bind("Wood plank", "Thicker key", Key(KeyCode.I), "While holding a wood plank in placement mode, or pointing at one attached by one end and not nailed, this key makes it thicker, to the next 0.05 m (up to 1 m).");
+            PlankThinnerKey = config.Bind("Wood plank", "Thinner key", Key(KeyCode.K), "While holding a wood plank in placement mode, or pointing at one attached by one end and not nailed, this key makes it thinner, to the next 0.05 m (down to the standard 45 mm).");
             // The user, 2026-11-08: "also add a configurator option, default off, when enable, show the weight of the current plank/pole on the text also".
             ShowRodWeight = config.Bind("Wood pole", "Show pole and plank weight", false,
                 "While holding a wood pole or plank, the line under the view (its size) also shows its weight in lb.");
@@ -165,8 +212,11 @@ namespace TentandPlank
                 "Seconds of hammering for one wood plank to repair a damaged hull (0: at once). Half this when the hull is caulked with oakum.",
                 new AcceptableValueRange<int>(0, 20)));
             PlanksNeeded = config.Bind("Wood plank", "Planks needed", PlankCount.FeeEquivalent, new ConfigDescription(
-                "Fixing fee equivalent: the planks a ship needs for 1% of its hull cost about what the shipyard charges to repair it (more planks for a bigger, dearer ship). Fixed 0.5% per plank: every plank repairs 0.5% of any ship's hull (2 planks for 1%).",
+                "Fixing fee equivalent: the planks a ship needs for 1% of its hull cost about what the shipyard charges to repair it (more planks for a bigger, dearer ship). Fixed per plank: every plank repairs the slider's share of any ship's hull, 0.5% to 10% in 0.5% steps (0.5% by default: 2 planks for 1%).",
                 null, new ConfigurationManagerAttributes { CustomDrawer = PlankCountButtons }));
+            PlankRepairPercent = config.Bind("Wood plank", "Hull repaired per plank", .5f, new ConfigDescription(
+                "With \"Planks needed\" on Fixed per plank: the share of a ship's hull one plank repairs, 0.5% to 10% in 0.5% steps. Set with the slider under \"Planks needed\".",
+                new AcceptableValueRange<float>((float)Rules.PlankRepairLeast, (float)Rules.PlankRepairMost), new ConfigurationManagerAttributes { Browsable = false }));
             TarpWear = config.Bind("Canvas", "Tarp wearing", false,
                 "Tied canvas tarps lose 10 health a game day and tear at 0. When off, every tarp's health, colour and holes stay as they are. Turning it back on continues wearing from there.");
             WaterDamage.SettingChanged += (s, e) => { foreach (var c in CargoCondition.Active) c.RefreshSettings(); };
@@ -179,7 +229,7 @@ namespace TentandPlank
         }
     }
     // Read by the configurator (Configuration Manager) by name: draws a setting with the mod's own controls.
-    internal sealed class ConfigurationManagerAttributes { public Action<ConfigEntryBase> CustomDrawer; public bool? HideDefaultButton; }
+    internal sealed class ConfigurationManagerAttributes { public Action<ConfigEntryBase> CustomDrawer; public bool? HideDefaultButton; public bool? Browsable; }
 
     // ---- Notices ----
     // The game shows a notification as one text over a parchment of fixed size and never wraps it: each line is wrapped at
@@ -273,9 +323,9 @@ namespace TentandPlank
         internal static int Index(PurchasableBoat b) => b.GetComponent<SaveableObject>().sceneIndex;
     }
 
-    // A ship's deck drop point (EconomyOverhaul's ForcedMove.DropPoint, copied as is): 1.5 m over a flat stretch of her walk
-    // collider's top, tried outward from the middle along both axes, carried back to her real frame; with none found, 10 m over
-    // her origin. Tarps fall to it (Tarps' floor search) when no deck is hit under a corner.
+    // A ship's deck drop point (EconomyOverhaul's ForcedMove.DropPoint, copied as is): 1.5 m over a flat stretch of its walk
+    // collider's top, tried outward from the middle along both axes, carried back to its real frame; with none found, 10 m over
+    // its origin. Tarps fall to it (Tarps' floor search) when no deck is hit under a corner.
     internal static class ForcedMove
     {
         internal static Vector3 DropPoint(PurchasableBoat ship) => DeckDrop(ship) ?? ship.transform.position + Vector3.up * 10;
@@ -295,7 +345,7 @@ namespace TentandPlank
                     }
             return null;
         }
-        // Her boarding trigger that names her walk collider, the player-sized one first (the game boards from either).
+        // The ship's boarding trigger that names its walk collider, the player-sized one first (the game boards from either).
         private static BoatEmbarkCollider Link(PurchasableBoat ship) => ship.GetComponentsInChildren<BoatEmbarkCollider>(true)
             .Where(c => c.walkCollider).OrderBy(c => c.CompareTag("EmbarkColPlayer") ? 0 : 1).FirstOrDefault();
         // The top of the walk collider straight down through (x, z) of its own frame.
@@ -460,7 +510,7 @@ namespace TentandPlank
         // EconomyOverhaul's deep review, the user, 2026-11-02: "can we remove it"; until then every -3 record was kept for good).
         internal static bool Retires(int parent, bool comesBack) => parent != -2 && (parent != -3 || !comesBack);
         // A copy of this item waits in a ship's cached items, or another live item has its id (the cached copy already respawned).
-        // The game destroys a sunk ship's items at the recovery's black screen, before her cached items respawn.
+        // The game destroys a sunk ship's items at the recovery's black screen, before its cached items respawn.
         internal static bool ComesBack(SaveablePrefab save)
         {
             var manager = SaveLoadManager.instance; if (!manager) return true;   // not known: kept, as before
@@ -474,6 +524,9 @@ namespace TentandPlank
             return false;
         }
     }
+    // The record goes only when the destroy really ran: another mod's prefix may refuse it and the item stays (New Beginnings' starter items;
+    // EconomyOverhaul's deep review of 2026-11-09, question 4a). The postfix reads __runOriginal, which holds every prefix's answer whatever their
+    // order; the parent is read in the prefix, before ExitBoat sets it to -1.
     [HarmonyPatch(typeof(ShipItem), "DestroyItem")] internal static class RetireCargoRecordPatch
     {
         static void Prefix(ShipItem __instance, out int __state)
@@ -486,7 +539,7 @@ namespace TentandPlank
             bool comesBack = parent == -3 && World.Cargo.ContainsKey(save.instanceId) && CargoRecords.ComesBack(save);
             if (CargoRecords.Retires(parent, comesBack)) __state = save.instanceId;
         }
-        static void Postfix(int __state) { CargoRecords.Destroyed(__state); }
+        static void Postfix(int __state, bool __runOriginal) { if (__runOriginal) CargoRecords.Destroyed(__state); }
     }
 
     // ---- Cargo value at sale (the game's prices x the cargo's condition) ----
