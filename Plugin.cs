@@ -25,7 +25,7 @@ namespace TentandPlank
     public sealed class Plugin : BaseUnityPlugin
     {
         public const string Guid = "DogEggz.TentandPlank";
-        public const string Version = "1.1.6";
+        public const string Version = "1.1.7";
         internal static ManualLogSource Log;
         internal static Plugin Instance;
         private Harmony harmony;
@@ -141,6 +141,9 @@ namespace TentandPlank
         internal static ConfigEntry<DryingSpeedChoice> DryingSpeedOption;
         internal static double WaterDamageSpeed => Rules.WaterDamageSpeed(WaterDamageSpeedOption != null ? (int)WaterDamageSpeedOption.Value : 3);
         internal static double DryingSpeed => Rules.DryingSpeed(DryingSpeedOption != null ? (int)DryingSpeedOption.Value : 0, WaterDamageSpeed);
+        // Lantern drying: cargo near a lit lantern dries as if its cover were at most this, 20-90% in 1% steps (Rules.LanternCover).
+        internal static ConfigEntry<int> LanternCoverOption;
+        internal static int LanternCover => LanternCoverOption?.Value ?? Rules.LanternCoverDefault;
         private static readonly string[] WaterSpeedNames = { "0.25x", "0.5x", "0.75x", "1x" };
         private static readonly string[] DryingSpeedNames = { "1x", "1.5x", "2x", "2.5x", "3x" };
         private static void WaterSpeedButtons(ConfigEntryBase entry)
@@ -172,6 +175,9 @@ namespace TentandPlank
         // will never show if water damage is off)"; WetOutline).
         internal static ConfigEntry<bool> WetOutlineOption;
         internal static bool WetOutlineEnabled => WetOutlineOption?.Value ?? true;
+        // The yellow-orange look outline of cargo drying now (WetOutline), on by default.
+        internal static ConfigEntry<bool> DryingOutlineOption;
+        internal static bool DryingOutlineEnabled => DryingOutlineOption?.Value ?? true;
         internal static void Bind(ConfigFile config)
         {
             WaterDamage = config.Bind("Cargo", "Enable water damage", false,
@@ -184,10 +190,16 @@ namespace TentandPlank
             DryingSpeedOption = config.Bind("Cargo", "Drying speed", DryingSpeedChoice.AsWaterDamage, new ConfigDescription(
                 "How fast wet cargo dries: as the water damage speed (the default), or 1x, 1.5x, 2x, 2.5x or 3x. How far cargo dries back stays the same. No effect while water damage is disabled.",
                 null, new ConfigurationManagerAttributes { CustomDrawer = DryingSpeedButtons }));
+            LanternCoverOption = config.Bind("Cargo", "Lantern drying as % covered", Rules.LanternCoverDefault, new ConfigDescription(
+                "Lantern drying speed same as how many % covered. Big Lantern will be this value -20%.",
+                new AcceptableValueRange<int>(Rules.LanternCoverLeast, Rules.LanternCoverMost)));
+            LanternCoverOption.SettingChanged += (s,e) => Lanterns.Changed();
             CoverHint =config.Bind("Cargo", "Show cover percentage", false,
                 "Show how much of vulnerable cargo's top is under cover (a deck, a roof or a canvas tarp), 0% to 100%, below its water damage line. Hidden when water damage is disabled. This setting only changes the hint.");
             WetOutlineOption = config.Bind("Cargo", "Deep blue outline on wet cargo", true,
                 "When you look at cargo that is getting wetter right now (in water aboard or in the sea, or in rain with its top not fully covered), its outline is deep blue instead of the usual colour. Cargo that is already wet but out of the water and the rain shows the usual outline. Never shown while water damage is disabled.");
+            DryingOutlineOption = config.Bind("Cargo", "Yellow outline for drying cargo", true,
+                "When you look at wet cargo that is drying right now (in the open air or by a lit lantern), its outline is yellow instead of the usual colour, until it has dried as far as it can. Never shown while water damage is disabled.");
             FragileCargo = config.Bind("Cargo", "Enable fragile cargo", false,
                 "Fragile cargo (gems, sculptures, marble) is damaged by hull impacts and loses value. When off, saved damage pauses and cargo has full value. Re-enabling resumes the saved damage.");
             CargoDamageHint = config.Bind("Cargo", "Show cargo damage percentage", true,
